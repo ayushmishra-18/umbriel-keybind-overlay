@@ -1,0 +1,188 @@
+/* Umbriel Keybind Overlay - GTK 3 CSS */
+
+window {
+    background-color: transparent;
+}
+
+.main-container {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+/* Header & Search Bar */
+.search-box {
+    background-color: #1e1e2e;
+    border: 1px solid #45475a;
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+}
+
+.search-entry {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    color: #cdd6f4;
+    font-size: 15px;
+}
+
+.search-entry:focus {
+    color: #cdd6f4;
+}
+
+/* Submap banner indicator */
+.submap-banner {
+    background-color: #313244;
+    border-left: 3px solid #fab387;
+    border-radius: 6px;
+    padding: 6px 12px;
+    margin-bottom: 8px;
+}
+
+.submap-banner-label {
+    color: #fab387;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+.submap-banner-hint {
+    color: #a6adc8;
+    font-size: 11px;
+}
+
+/* Results List */
+.results-scroll {
+    background: transparent;
+    border: none;
+}
+
+.results-list {
+    background: transparent;
+}
+
+.result-row {
+    background: transparent;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 1px 0;
+}
+
+.result-row:hover {
+    background-color: #24273a;
+}
+
+.result-row:selected {
+    background-color: #313244;
+}
+
+.action-title {
+    color: #cdd6f4;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.action-raw {
+    color: #6c7086;
+    font-size: 11px;
+    font-family: monospace;
+}
+
+/* Keycap Chords */
+.keycap-container {
+    margin-left: 4px;
+}
+
+.keycap {
+    background-color: #1e1e2e;
+    color: #89b4fa;
+    border: 1px solid #45475a;
+    border-bottom: 2px solid #585b70;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: bold;
+}
+
+.result-row:selected .keycap {
+    background-color: #181825;
+    border-color: #89b4fa;
+    color: #b4befe;
+}
+
+.chord-plus {
+    color: #585b70;
+    font-size: 10px;
+    margin: 0 2px;
+}
+
+/* Badges */
+.badge {
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.badge-submap {
+    background-color: #fab387;
+    color: #11111b;
+}
+
+.badge-danger {
+    background-color: #f38ba8;
+    color: #11111b;
+}
+
+.badge-inherited {
+    background-color: #45475a;
+    color: #cdd6f4;
+}
+
+.badge-category {
+    background-color: #313244;
+    color: #a6adc8;
+    font-size: 10px;
+}
+
+/* Footer & Status Bar */
+.footer-bar {
+    border-top: 1px solid #313244;
+    padding-top: 8px;
+    margin-top: 8px;
+}
+
+.footer-text {
+    color: #6c7086;
+    font-size: 11px;
+}
+
+.footer-key-hint {
+    color: #a6adc8;
+    font-family: monospace;
+    font-weight: bold;
+}
+
+.status-hint {
+    color: #f38ba8;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.status-ok {
+    color: #a6e3a1;
+    font-size: 12px;
+}
+
+.status-info {
+    color: #89b4fa;
+    font-size: 12px;
+}
+
+.empty-state {
+    color: #6c7086;
+    font-size: 13px;
+    padding: 24px;
+}
