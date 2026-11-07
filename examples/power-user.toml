@@ -1,0 +1,95 @@
+# Umbriel Power-User Configuration Example
+# A comprehensive setup demonstrating advanced flags (repeat, cooldown_ms,
+# allow_when_locked, allow_when_inhibited), multi-modal submaps,
+# and extensive navigation shortcuts.
+# Compatible with Umbriel 0.1.0 (commit c6ad18d).
+
+[general]
+# Modifier key definition (Super = logo/Windows key)
+mod_key = "Super"
+
+[keybinds]
+# --- Core Terminal & Menu Launchers ---
+# Terminal with cooldown to prevent rapid multi-spawns
+"Mod+Return" = { action = "spawn alacritty", cooldown_ms = 250, repeat = false }
+"Mod+D" = { action = "spawn fuzzel", cooldown_ms = 250, repeat = false }
+"Mod+B" = { action = "spawn firefox", cooldown_ms = 500, repeat = false }
+
+# --- Window State & Layout Controls ---
+"Mod+Q" = { action = "window-close", repeat = false }
+"Mod+M" = { action = "window-toggle-maximize", repeat = false }
+"Mod+F" = { action = "window-toggle-fullscreen", repeat = false }
+"Mod+P" = { action = "window-toggle-pinned", repeat = false }
+"Mod+Space" = { action = "window-toggle-floating", repeat = false }
+"Mod+Tab" = { action = "overview-toggle", repeat = false }
+
+# --- Directional Window Focus Navigation ---
+"Mod+H" = "window-focus-left"
+"Mod+L" = "window-focus-right"
+"Mod+K" = "window-focus-up"
+"Mod+J" = "window-focus-down"
+"Mod+BracketLeft" = "window-focus-previous"
+"Mod+BracketRight" = "window-focus-next"
+
+# --- Workspace Switching (1 to 9) ---
+"Mod+1" = "workspace-switch 1"
+"Mod+2" = "workspace-switch 2"
+"Mod+3" = "workspace-switch 3"
+"Mod+4" = "workspace-switch 4"
+"Mod+5" = "workspace-switch 5"
+"Mod+6" = "workspace-switch 6"
+"Mod+7" = "workspace-switch 7"
+"Mod+8" = "workspace-switch 8"
+"Mod+9" = "workspace-switch 9"
+
+# --- Move Window to Workspace (1 to 9) ---
+"Mod+Shift+1" = "window-move-to-workspace 1"
+"Mod+Shift+2" = "window-move-to-workspace 2"
+"Mod+Shift+3" = "window-move-to-workspace 3"
+"Mod+Shift+4" = "window-move-to-workspace 4"
+"Mod+Shift+5" = "window-move-to-workspace 5"
+"Mod+Shift+6" = "window-move-to-workspace 6"
+"Mod+Shift+7" = "window-move-to-workspace 7"
+"Mod+Shift+8" = "window-move-to-workspace 8"
+"Mod+Shift+9" = "window-move-to-workspace 9"
+
+# --- Hardware Media & Volume Keys (Available When Screen Locked) ---
+"XF86AudioRaiseVolume" = { action = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+", allow_when_locked = true, repeat = true }
+"XF86AudioLowerVolume" = { action = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-", allow_when_locked = true, repeat = true }
+"XF86AudioMute" = { action = "spawn wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle", allow_when_locked = true, repeat = false }
+"XF86AudioPlay" = { action = "spawn playerctl play-pause", allow_when_locked = true, repeat = false }
+"XF86AudioNext" = { action = "spawn playerctl next", allow_when_locked = true, repeat = false }
+"XF86AudioPrev" = { action = "spawn playerctl previous", allow_when_locked = true, repeat = false }
+
+# --- Emergency Shortcuts (Available Even When Shortcuts Inhibited) ---
+"Mod+Shift+Escape" = { action = "shortcuts-inhibit-toggle", allow_when_inhibited = true, repeat = false }
+
+# =====================================================================
+# Submap 1: Screencapture
+# =====================================================================
+"Mod+S" = { action = "submap screencapture", repeat = false }
+"submap[screencapture],1" = { action = "spawn grim area.png", submap = "reset" }
+"submap[screencapture],2" = { action = "spawn grim window.png", submap = "reset" }
+"submap[screencapture],3" = { action = "spawn grim full.png", submap = "reset" }
+"submap[screencapture],Escape" = "submap reset"
+
+# =====================================================================
+# Submap 2: Window Management Mode
+# =====================================================================
+"Mod+W" = { action = "submap window_mgmt", repeat = false }
+"submap[window_mgmt],H" = "window-focus-left"
+"submap[window_mgmt],L" = "window-focus-right"
+"submap[window_mgmt],K" = "window-focus-up"
+"submap[window_mgmt],J" = "window-focus-down"
+"submap[window_mgmt],M" = { action = "window-toggle-maximize", submap = "reset" }
+"submap[window_mgmt],F" = { action = "window-toggle-floating", submap = "reset" }
+"submap[window_mgmt],P" = { action = "window-toggle-pinned", submap = "reset" }
+"submap[window_mgmt],Escape" = "submap reset"
+
+# =====================================================================
+# Submap 3: System Session Mode
+# =====================================================================
+"Mod+X" = { action = "submap system", repeat = false }
+"submap[system],L" = { action = "spawn swaylock", allow_when_locked = true, submap = "reset" }
+"submap[system],Q" = { action = "session-quit", submap = "reset" }
+"submap[system],Escape" = "submap reset"
