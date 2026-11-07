@@ -1,0 +1,77 @@
+# Umbriel Typical Desktop Configuration Example
+# A realistic daily desktop setup featuring application launchers,
+# window navigation, full 1-9 workspace management, media keys,
+# and a screencapture submap.
+# Compatible with Umbriel 0.1.0 (commit c6ad18d).
+
+[general]
+# Modifier key definition (Super = logo/Windows key)
+mod_key = "Super"
+
+[keybinds]
+# --- Application Launchers ---
+"Mod+Return" = "spawn alacritty"
+"Mod+D" = "spawn fuzzel"
+"Mod+B" = "spawn firefox"
+
+# --- Window Layout & State Management ---
+"Mod+Q" = "window-close"
+"Mod+M" = "window-toggle-maximize"
+"Mod+F" = "window-toggle-fullscreen"
+"Mod+P" = "window-toggle-pinned"
+"Mod+Space" = "window-toggle-floating"
+"Mod+Tab" = "overview-toggle"
+
+# --- Focus Navigation (Vim-style directional) ---
+"Mod+H" = "window-focus-left"
+"Mod+L" = "window-focus-right"
+"Mod+K" = "window-focus-up"
+"Mod+J" = "window-focus-down"
+
+# --- Workspace Switching (1 to 9) ---
+"Mod+1" = "workspace-switch 1"
+"Mod+2" = "workspace-switch 2"
+"Mod+3" = "workspace-switch 3"
+"Mod+4" = "workspace-switch 4"
+"Mod+5" = "workspace-switch 5"
+"Mod+6" = "workspace-switch 6"
+"Mod+7" = "workspace-switch 7"
+"Mod+8" = "workspace-switch 8"
+"Mod+9" = "workspace-switch 9"
+
+# --- Move Focused Window to Workspace (1 to 9) ---
+"Mod+Shift+1" = "window-move-to-workspace 1"
+"Mod+Shift+2" = "window-move-to-workspace 2"
+"Mod+Shift+3" = "window-move-to-workspace 3"
+"Mod+Shift+4" = "window-move-to-workspace 4"
+"Mod+Shift+5" = "window-move-to-workspace 5"
+"Mod+Shift+6" = "window-move-to-workspace 6"
+"Mod+Shift+7" = "window-move-to-workspace 7"
+"Mod+Shift+8" = "window-move-to-workspace 8"
+"Mod+Shift+9" = "window-move-to-workspace 9"
+
+# --- Workspace Cycle Navigation ---
+"Mod+BracketLeft" = "workspace-previous"
+"Mod+BracketRight" = "workspace-next"
+
+# --- Hardware Media & Volume Keys ---
+"XF86AudioRaiseVolume" = { action = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+", allow_when_locked = true }
+"XF86AudioLowerVolume" = { action = "spawn wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-", allow_when_locked = true }
+"XF86AudioMute" = { action = "spawn wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle", allow_when_locked = true }
+"XF86AudioPlay" = { action = "spawn playerctl play-pause", allow_when_locked = true }
+
+# --- Screencapture Submap ---
+# Direct key: capture full screen
+"Print" = { action = "spawn grim screenshot.png", cooldown_ms = 500 }
+
+# Enter screencapture modal submap
+"Mod+S" = { action = "submap screencapture", repeat = false }
+
+# Submap actions (reset returns to default submap upon trigger)
+"submap[screencapture],1" = { action = "spawn grim area.png", submap = "reset" }
+"submap[screencapture],2" = { action = "spawn grim output.png", submap = "reset" }
+"submap[screencapture],Escape" = "submap reset"
+
+# --- Session Control ---
+"Mod+Shift+Q" = { action = "session-quit", repeat = false }
+"Mod+Escape" = { action = "session-quit skip-confirmation", repeat = false }
