@@ -1,0 +1,50 @@
+[
+  {
+    "active": false,
+    "app_id": "Alacritty",
+    "border_effect": {
+      "name": "",
+      "overlay": "",
+      "pool": "",
+      "source": "default",
+      "suppressed": false
+    },
+    "column": 0,
+    "content_type": "none",
+    "floating": false,
+    "focused": true,
+    "fullscreen": false,
+    "h": 1018,
+    "id": "f093b68bcc9c53691afcad97638e54f2",
+    "maximized": true,
+    "maximized_to_edges": false,
+    "minimizable": false,
+    "minimized": false,
+    "output": "WL-1",
+    "parent": "",
+    "pid": 267553,
+    "pinned": false,
+    "region": null,
+    "row": 0,
+    "scratchpad": "",
+    "tab_hidden": false,
+    "tab_index": -1,
+    "tabbed": false,
+    "title": "Alacritty",
+    "title_bar": false,
+    "urgent": false,
+    "visible": true,
+    "w": 888,
+    "window_effect": {
+      "name": "",
+      "pool": "",
+      "source": "default",
+      "suppressed": false
+    },
+    "workspace": "WL-1:1",
+    "x": 10,
+    "xdg_tag": "",
+    "xwayland": false,
+    "y": 10
+  }
+]
