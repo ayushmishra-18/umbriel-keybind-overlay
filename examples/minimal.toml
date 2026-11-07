@@ -1,0 +1,19 @@
+# Umbriel Minimal Configuration Example
+# Intended as the smallest sensible daily keybind setup.
+# Compatible with Umbriel 0.1.0 (commit c6ad18d).
+
+[general]
+# Modifier key definition (Super = logo/Windows key)
+mod_key = "Super"
+
+[keybinds]
+# Launchers & Applications
+"Mod+Return" = "spawn alacritty"
+"Mod+D" = "spawn fuzzel"
+
+# Basic Window Controls
+"Mod+Q" = "window-close"
+"Mod+M" = "window-toggle-maximize"
+
+# Session Control
+"Mod+Shift+E" = { action = "session-quit", repeat = false }
