@@ -91,55 +91,85 @@ class TestActionFormatting(unittest.TestCase):
 
 class TestUmbrielKeysReader(unittest.TestCase):
     def test_scratch_fixture_parsing(self):
-        config_path = "/tmp/umbriel-nested-test.odndZI/config/config.toml"
-        if not os.path.exists(config_path):
-            self.skipTest(f"{config_path} not found")
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = os.path.join(tmpdir, "config.toml")
+            with open(cfg, "w") as f:
+                f.write("""[general]
+mod_key = "alt"
 
-        data = umbriel_keys.build(config_path)
-        self.assertIn("binds", data)
-        self.assertEqual(len(data["binds"]), 6)
+[keybinds]
+"Mod+Escape" = { action = "session-quit skip-confirmation", repeat = false }
+"Mod+T" = "window-toggle-pinned"
+"Mod+B" = { action = "window-toggle-maximize" }
+"Mod+S" = { action = "submap screencapture", repeat = false }
+"submap[screencapture],1" = { action = "window-toggle-maximize", submap = "reset" }
+"submap[screencapture],Escape" = "submap reset"
+""")
+            data = umbriel_keys.build(cfg)
+            self.assertIn("binds", data)
+            self.assertEqual(len(data["binds"]), 6)
 
-        keys = [b["key"] for b in data["binds"]]
-        self.assertIn("Mod+Escape", keys)
-        self.assertIn("Mod+T", keys)
-        self.assertIn("Mod+B", keys)
-        self.assertIn("Mod+S", keys)
-        self.assertIn("1", keys)
-        self.assertIn("Escape", keys)
+            keys = [b["key"] for b in data["binds"]]
+            self.assertIn("Mod+Escape", keys)
+            self.assertIn("Mod+T", keys)
+            self.assertIn("Mod+B", keys)
+            self.assertIn("Mod+S", keys)
+            self.assertIn("1", keys)
+            self.assertIn("Escape", keys)
 
-        # Check that '1' row carries submap == 'reset'
-        one_row = next(b for b in data["binds"] if b["key"] == "1")
-        self.assertEqual(one_row.get("flags", {}).get("submap"), "reset")
+            # Check that '1' row carries submap == 'reset'
+            one_row = next(b for b in data["binds"] if b["key"] == "1")
+            self.assertEqual(one_row.get("flags", {}).get("submap"), "reset")
 
     def test_include_merge_fixture_parsing(self):
-        config_path = "/tmp/umbriel-keys-test.4Exrb8/main.toml"
-        if not os.path.exists(config_path):
-            self.skipTest(f"{config_path} not found")
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shared = os.path.join(tmpdir, "shared")
+            os.makedirs(shared)
+            with open(os.path.join(shared, "media.toml"), "w") as f:
+                f.write("""[keybinds]
+"Mod+T" = "spawn firefox"
+"Mod+B" = { action = "window-toggle-fullscreen", repeat = false, allow_when_locked = true }
+""")
+            cfg = os.path.join(tmpdir, "main.toml")
+            with open(cfg, "w") as f:
+                f.write("""[general]
+mod_key = "alt"
 
-        data = umbriel_keys.build(config_path)
-        self.assertIn("binds", data)
-        self.assertEqual(len(data["binds"]), 5)
+[include]
+files = ["shared/media.toml", "shared/missing-required.toml"]
 
-        mod_b = next((b for b in data["binds"] if b["key"] == "Mod+B"), None)
-        self.assertIsNotNone(mod_b)
-        self.assertIn("inherited", mod_b)
-        self.assertIn("repeat", mod_b["inherited"])
+[include.optional]
+files = ["shared/not-there-optional.toml"]
+
+[keybinds]
+"Mod+T" = "window-toggle-pinned"
+"Mod+B" = { action = "window-toggle-maximize" }
+"Mod+S" = { action = "submap screencapture", repeat = false }
+"submap[screencapture],1" = { action = "spawn grim screenshot.png", submap = "reset" }
+"submap[screencapture],Escape" = "submap reset"
+""")
+            data = umbriel_keys.build(cfg)
+            self.assertIn("binds", data)
+            self.assertEqual(len(data["binds"]), 5)
+
+            mod_b = next((b for b in data["binds"] if b["key"] == "Mod+B"), None)
+            self.assertIsNotNone(mod_b)
+            self.assertIn("inherited", mod_b)
+            self.assertIn("repeat", mod_b["inherited"])
 
 
 class TestFilteringLogic(unittest.TestCase):
     def setUp(self):
-        config_path = "/tmp/umbriel-nested-test.odndZI/config/config.toml"
-        if os.path.exists(config_path):
-            self.binds = umbriel_keys.build(config_path).get("binds", [])
-        else:
-            self.binds = [
-                {"key": "Mod+Escape", "action": "session-quit skip-confirmation", "context": "default", "category": "Session"},
-                {"key": "Mod+T", "action": "window-toggle-pinned", "context": "default", "category": "Window state"},
-                {"key": "Mod+B", "action": "window-toggle-maximize", "context": "default", "category": "Window state"},
-                {"key": "Mod+S", "action": "submap screencapture", "context": "default", "category": "Submaps"},
-                {"key": "1", "action": "window-toggle-maximize", "context": "screencapture", "category": "Window state"},
-                {"key": "Escape", "action": "submap reset", "context": "screencapture", "category": "Submaps"},
-            ]
+        self.binds = [
+            {"key": "Mod+Escape", "action": "session-quit skip-confirmation", "context": "default", "category": "Session"},
+            {"key": "Mod+T", "action": "window-toggle-pinned", "context": "default", "category": "Window state"},
+            {"key": "Mod+B", "action": "window-toggle-maximize", "context": "default", "category": "Window state"},
+            {"key": "Mod+S", "action": "submap screencapture", "context": "default", "category": "Submaps"},
+            {"key": "1", "action": "window-toggle-maximize", "context": "screencapture", "category": "Window state"},
+            {"key": "Escape", "action": "submap reset", "context": "screencapture", "category": "Submaps"},
+        ]
 
     def _filter(self, query: str, active_submap: str = None):
         words = query.strip().lower().split()
@@ -204,6 +234,62 @@ class TestConfigResolution(unittest.TestCase):
         w_default = compute_target_width(620, margin=40)
         self.assertLessEqual(w_default, 620)
         self.assertGreaterEqual(w_default, 320)
+
+
+class TestEdgeCasesAndRobustness(unittest.TestCase):
+    def test_empty_and_whitespace_actions(self):
+        """Verify clean_label and categorize handle empty/whitespace inputs without IndexError."""
+        self.assertEqual(umbriel_keys.clean_label(""), "")
+        self.assertEqual(umbriel_keys.clean_label("   "), "")
+        self.assertEqual(umbriel_keys.categorize(""), "Other")
+        self.assertEqual(umbriel_keys.categorize("   "), "Other")
+        self.assertEqual(format_action_title(""), "")
+        self.assertEqual(format_action_title("   "), "")
+
+    def test_chord_rendering_plus_key(self):
+        """Verify split_chord handles chords containing '+' as the target key."""
+        from overlay import split_chord
+        self.assertEqual(split_chord("Mod++"), ["Mod", "+"])
+        self.assertEqual(split_chord("+"), ["+"])
+        self.assertEqual(split_chord("Ctrl+Shift++"), ["Ctrl", "Shift", "+"])
+        self.assertEqual(split_chord("Mod+B"), ["Mod", "B"])
+        self.assertEqual(split_chord(""), [])
+
+    def test_malformed_toml_structures(self):
+        """Verify Parser.parse safely records errors on malformed TOML structures rather than crashing."""
+        import tempfile
+
+        # 1. Non-dict root
+        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tf:
+            tf.write('"not a table"\n')
+            tf.flush()
+            p = umbriel_keys.Parser()
+            p.parse(tf.name)
+            self.assertGreater(len(p.errors), 0)
+
+        # 2. Non-dict general
+        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tf:
+            tf.write('general = "invalid string"\n')
+            tf.flush()
+            p = umbriel_keys.Parser()
+            p.parse(tf.name)
+            # Should not raise AttributeError
+
+        # 3. Non-dict include
+        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tf:
+            tf.write('include = "invalid string"\n')
+            tf.flush()
+            p = umbriel_keys.Parser()
+            p.parse(tf.name)
+            # Should not raise AttributeError
+
+        # 4. Non-dict keybinds
+        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tf:
+            tf.write('keybinds = ["invalid", "list"]\n')
+            tf.flush()
+            p = umbriel_keys.Parser()
+            p.parse(tf.name)
+            # Should not raise AttributeError
 
 
 if __name__ == "__main__":
