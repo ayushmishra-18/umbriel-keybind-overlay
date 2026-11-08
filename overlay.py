@@ -423,6 +423,9 @@ class KeybindOverlay(Gtk.Window):
 
         self._executing = False
         self._destroyed = False
+        self._cancel_event = threading.Event()
+        self._pending_proc = None
+        self._proc_lock = threading.Lock()
 
         self._load_css()
         self._build_ui()
@@ -826,7 +829,11 @@ class KeybindOverlay(Gtk.Window):
                 self.search_entry.grab_focus()
 
     def _execute_bind(self, bind: dict):
-        if getattr(self, "_executing", False) or getattr(self, "_destroyed", False):
+        if (
+            getattr(self, "_executing", False)
+            or getattr(self, "_destroyed", False)
+            or (hasattr(self, "_cancel_event") and self._cancel_event.is_set())
+        ):
             return
 
         action = bind.get("action", "")
@@ -880,31 +887,117 @@ class KeybindOverlay(Gtk.Window):
         submap_after = flags.get("submap")
         submap_after_str = str(submap_after) if submap_after else None
 
+        # Cancellation and Dispatch Semantics:
+        # 1. Cancellation checks: the worker explicitly polls self._cancel_event before running the
+        #    safety gate, before launching the primary umbriel msg command, upon registering the
+        #    spawned process under self._proc_lock, before launching any follow-up submap command,
+        #    and upon registering the submap process.
+        # 2. Child tracking: while a CLI child is in-flight, it is registered in self._pending_proc under
+        #    self._proc_lock. If cancellation occurs during or prior to registration, the process is
+        #    terminated immediately. If the overlay is destroyed while in-flight, _on_destroy terminates
+        #    the pending process immediately under self._proc_lock so follow-up submaps never execute.
+        # 3. Honest limitation: once umbriel accepts a command or spawns an external process (such as a
+        #    terminal or browser), that action runs independently in the compositor/session and cannot be
+        #    undone or killed by the overlay.
+        # 4. Silent exit: if cancelled at any point, the worker exits silently without touching the UI
+        #    or raising an exception.
         def worker():
             def finish(callback):
                 def idle_cb():
                     self._executing = False
-                    if not getattr(self, "_destroyed", False):
+                    cancel_ev = getattr(self, "_cancel_event", None)
+                    if not getattr(self, "_destroyed", False) and not (cancel_ev and cancel_ev.is_set()):
                         callback()
                     return False
                 GLib.idle_add(idle_cb)
 
             try:
+                cancel_ev = getattr(self, "_cancel_event", None)
+                if (cancel_ev and cancel_ev.is_set()) or getattr(self, "_destroyed", False):
+                    self._executing = False
+                    return
+
                 # Strict Safety Gate check: verify compositor is alive AND targets exact instance
                 safe, msg = verify_safety_gate(
                     config_path,
                     scratch_config=scratch_config,
                     scratch_cache=scratch_cache
                 )
+                cancel_ev = getattr(self, "_cancel_event", None)
+                if (cancel_ev and cancel_ev.is_set()) or getattr(self, "_destroyed", False):
+                    self._executing = False
+                    return
+
                 if not safe:
                     finish(lambda: self.set_status(msg, "error"))
                     return
 
                 # Argument execution with umbriel msg
                 cmd = ["umbriel", "msg"] + parsed_argv
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-                stdout = (res.stdout or "").strip()
-                stderr = (res.stderr or "").strip()
+                if (cancel_ev and cancel_ev.is_set()) or getattr(self, "_destroyed", False):
+                    self._executing = False
+                    return
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                cancelled = False
+                proc_lock = getattr(self, "_proc_lock", None)
+                if proc_lock:
+                    with proc_lock:
+                        cancel_ev = getattr(self, "_cancel_event", None)
+                        if getattr(self, "_destroyed", False) or (cancel_ev and cancel_ev.is_set()):
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                            cancelled = True
+                        else:
+                            self._pending_proc = proc
+                else:
+                    cancel_ev = getattr(self, "_cancel_event", None)
+                    if getattr(self, "_destroyed", False) or (cancel_ev and cancel_ev.is_set()):
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        cancelled = True
+                    else:
+                        self._pending_proc = proc
+
+                if cancelled:
+                    self._executing = False
+                    return
+
+                try:
+                    stdout, stderr = proc.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    if proc_lock:
+                        with proc_lock:
+                            if self._pending_proc is proc:
+                                self._pending_proc = None
+                    cancel_ev = getattr(self, "_cancel_event", None)
+                    if not (cancel_ev and cancel_ev.is_set()) and not getattr(self, "_destroyed", False):
+                        finish(lambda: self.set_status("Execution timed out after 3 seconds", "error"))
+                    return
+                finally:
+                    if proc_lock:
+                        with proc_lock:
+                            if self._pending_proc is proc:
+                                self._pending_proc = None
+
+                cancel_ev = getattr(self, "_cancel_event", None)
+                if (cancel_ev and cancel_ev.is_set()) or getattr(self, "_destroyed", False):
+                    self._executing = False
+                    return
+
+                stdout = (stdout or "").strip()
+                stderr = (stderr or "").strip()
                 raw_out = stdout or stderr
                 if raw_out:
                     try:
@@ -916,16 +1009,77 @@ class KeybindOverlay(Gtk.Window):
                     except Exception:
                         pass
 
-                if res.returncode != 0:
-                    err_msg = raw_out or f"Exit code {res.returncode}"
+                if proc.returncode != 0:
+                    err_msg = raw_out or f"Exit code {proc.returncode}"
                     finish(lambda: self.set_status(f"Compositor error: {err_msg}", "error"))
                     return
 
                 # Handle submap-after: if bind has flags.submap, apply it now
                 if submap_after_str:
+                    cancel_ev = getattr(self, "_cancel_event", None)
+                    if (cancel_ev and cancel_ev.is_set()) or getattr(self, "_destroyed", False):
+                        self._executing = False
+                        return
+
                     sub_cmd = ["umbriel", "msg", "submap", submap_after_str]
-                    sub_res = subprocess.run(sub_cmd, capture_output=True, text=True, timeout=3)
-                    if sub_res.returncode != 0:
+                    sub_proc = subprocess.Popen(
+                        sub_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    sub_cancelled = False
+                    if proc_lock:
+                        with proc_lock:
+                            cancel_ev = getattr(self, "_cancel_event", None)
+                            if getattr(self, "_destroyed", False) or (cancel_ev and cancel_ev.is_set()):
+                                try:
+                                    sub_proc.terminate()
+                                except Exception:
+                                    pass
+                                sub_cancelled = True
+                            else:
+                                self._pending_proc = sub_proc
+                    else:
+                        cancel_ev = getattr(self, "_cancel_event", None)
+                        if getattr(self, "_destroyed", False) or (cancel_ev and cancel_ev.is_set()):
+                            try:
+                                sub_proc.terminate()
+                            except Exception:
+                                pass
+                            sub_cancelled = True
+                        else:
+                            self._pending_proc = sub_proc
+
+                    if sub_cancelled:
+                        self._executing = False
+                        return
+
+                    try:
+                        sub_out, sub_err = sub_proc.communicate(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        sub_proc.kill()
+                        sub_out, sub_err = sub_proc.communicate()
+                        if proc_lock:
+                            with proc_lock:
+                                if self._pending_proc is sub_proc:
+                                    self._pending_proc = None
+                        cancel_ev = getattr(self, "_cancel_event", None)
+                        if not (cancel_ev and cancel_ev.is_set()) and not getattr(self, "_destroyed", False):
+                            finish(lambda: self.set_status(f"Submap command timed out after 3 seconds", "error"))
+                        return
+                    finally:
+                        if proc_lock:
+                            with proc_lock:
+                                if self._pending_proc is sub_proc:
+                                    self._pending_proc = None
+
+                    cancel_ev = getattr(self, "_cancel_event", None)
+                    if (cancel_ev and cancel_ev.is_set()) or getattr(self, "_destroyed", False):
+                        self._executing = False
+                        return
+
+                    if sub_proc.returncode != 0:
                         finish(lambda: self.set_status(f"Failed to apply submap {submap_after_str}", "error"))
                         return
 
@@ -933,8 +1087,12 @@ class KeybindOverlay(Gtk.Window):
                 finish(lambda: Gtk.main_quit())
 
             except Exception as e:
-                err_text = str(e)
-                finish(lambda: self.set_status(f"Execution failed: {err_text}", "error"))
+                cancel_ev = getattr(self, "_cancel_event", None)
+                if not (cancel_ev and cancel_ev.is_set()) and not getattr(self, "_destroyed", False):
+                    err_text = str(e)
+                    finish(lambda: self.set_status(f"Execution failed: {err_text}", "error"))
+                else:
+                    self._executing = False
 
         t = threading.Thread(target=worker, daemon=True)
         self._worker_thread = t
@@ -983,7 +1141,16 @@ class KeybindOverlay(Gtk.Window):
 
     def _on_destroy(self, widget):
         self._destroyed = True
+        if hasattr(self, "_cancel_event"):
+            self._cancel_event.set()
         self._executing = False
+        if hasattr(self, "_proc_lock"):
+            with self._proc_lock:
+                if self._pending_proc and self._pending_proc.poll() is None:
+                    try:
+                        self._pending_proc.terminate()
+                    except Exception:
+                        pass
         if self.submap_listener_proc:
             try:
                 self.submap_listener_proc.terminate()
