@@ -62,6 +62,7 @@ EOF
 
 # Process management state
 COMPOSITOR_PID=""
+OVERLAY_PID=""
 
 CLEANED_UP=0
 
@@ -70,14 +71,58 @@ cleanup() {
         return
     fi
     CLEANED_UP=1
-    if [ -n "$COMPOSITOR_PID" ] && kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
+    if [ -n "$OVERLAY_PID" ] && [ "$OVERLAY_PID" -gt 0 ] 2>/dev/null && kill -0 "$OVERLAY_PID" 2>/dev/null; then
+        kill -TERM "$OVERLAY_PID" 2>/dev/null || true
+        GRACE_SEC="${UMBRIEL_CLEANUP_GRACE_SEC:-5}"
+        STEPS=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 10))" "$GRACE_SEC" 2>/dev/null || echo 50)
+        if [ -z "$STEPS" ] || [ "$STEPS" -le 0 ]; then
+            STEPS=50
+        fi
+        OVERLAY_STOPPED=0
+        for ((s=0; s<STEPS; s++)); do
+            if ! kill -0 "$OVERLAY_PID" 2>/dev/null; then
+                OVERLAY_STOPPED=1
+                break
+            fi
+            sleep 0.1
+        done
+        if [ "$OVERLAY_STOPPED" -eq 0 ] && kill -0 "$OVERLAY_PID" 2>/dev/null; then
+            kill -KILL "$OVERLAY_PID" 2>/dev/null || true
+        fi
+        wait "$OVERLAY_PID" 2>/dev/null || true
+        OVERLAY_PID=""
+    fi
+    if [ -n "$COMPOSITOR_PID" ] && [ "$COMPOSITOR_PID" -gt 0 ] 2>/dev/null && kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
         echo "Terminating nested compositor (PID: $COMPOSITOR_PID)..."
         kill -TERM "$COMPOSITOR_PID" 2>/dev/null || true
+
+        # Bounded wait for compositor termination
+        GRACE_SEC="${UMBRIEL_CLEANUP_GRACE_SEC:-5}"
+        STEPS=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 10))" "$GRACE_SEC" 2>/dev/null || echo 50)
+        if [ -z "$STEPS" ] || [ "$STEPS" -le 0 ]; then
+            STEPS=50
+        fi
+        STOPPED=0
+        for ((s=0; s<STEPS; s++)); do
+            if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
+                STOPPED=1
+                break
+            fi
+            sleep 0.1
+        done
+
+        if [ "$STOPPED" -eq 0 ] && kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
+            echo "Warning: Compositor did not terminate on SIGTERM; sent SIGKILL (PID: $COMPOSITOR_PID)." >&2
+            kill -KILL "$COMPOSITOR_PID" 2>/dev/null || true
+        fi
         wait "$COMPOSITOR_PID" 2>/dev/null || true
+        COMPOSITOR_PID=""
     fi
     echo "Test session finished. Scratch directory: $SCRATCH"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # 3. Launch nested Umbriel compositor
 STDOUT_LOG="$CACHE_DIR/umbriel/stdout.log"
@@ -92,7 +137,7 @@ COMPOSITOR_PID=$!
 
 # 4. Resolve the nested session's display name from logs
 DISPLAY_NAME=""
-for i in $(seq 1 50); do
+for i in $(seq 1 "${UMBRIEL_DISPLAY_TIMEOUT_STEPS:-50}"); do
     if [ ! -d "/proc/$COMPOSITOR_PID" ]; then
         echo "Error: Nested compositor exited unexpectedly (PID $COMPOSITOR_PID)" >&2
         cat "$STDERR_LOG" "$STDOUT_LOG" >&2
@@ -134,14 +179,17 @@ chmod +x "$REOPEN_WRAPPER"
 
 # 5. Close the nested session's built-in cheatsheet
 echo "[4/5] Closing nested session built-in cheatsheet..."
-for i in $(seq 1 25); do
+for i in $(seq 1 "${UMBRIEL_SOCKET_TIMEOUT_STEPS:-25}"); do
     if [ -S "$NESTED_SOCKET" ]; then
         break
     fi
     sleep 0.1
 done
 
-UMBRIEL_SOCKET="$NESTED_SOCKET" umbriel msg cheatsheet-close
+if ! UMBRIEL_SOCKET="$NESTED_SOCKET" umbriel msg cheatsheet-close; then
+    echo "Error: Failed to close nested cheatsheet via $NESTED_SOCKET" >&2
+    exit 1
+fi
 
 # 6. Launch Keybind Overlay targeting the nested session
 echo "[5/5] Launching Keybind Overlay against nested session..."
@@ -150,7 +198,11 @@ echo "      (In nested session: press Escape to close overlay; press Alt+Shift+S
 OVERLAY_EXIT_CODE=0
 WAYLAND_DISPLAY="$DISPLAY_NAME" \
 UMBRIEL_SOCKET="$NESTED_SOCKET" \
-python3 "$REPO_ROOT/overlay.py" -c "$SCRATCH_CONFIG" || OVERLAY_EXIT_CODE=$?
+python3 "$REPO_ROOT/overlay.py" -c "$SCRATCH_CONFIG" &
+OVERLAY_PID=$!
+
+wait "$OVERLAY_PID" || OVERLAY_EXIT_CODE=$?
+OVERLAY_PID=""
 
 if [ "$OVERLAY_EXIT_CODE" -eq 0 ]; then
     echo "Overlay closed normally."
