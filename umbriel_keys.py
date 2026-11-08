@@ -61,6 +61,8 @@ SCHEMA_VERSION = 1
 
 
 def clean_label(action: str) -> str:
+    if not action or not action.strip():
+        return ""
     parts = action.strip().split(None, 1)
     verb, args = parts[0], (parts[1] if len(parts) > 1 else "")
     if verb == "spawn":
@@ -75,6 +77,8 @@ def clean_label(action: str) -> str:
 
 
 def categorize(action: str) -> str:
+    if not action or not action.strip():
+        return "Other"
     verb = action.strip().split(None, 1)[0]
     for prefix, cat in CATEGORIES:
         if verb.startswith(prefix):
@@ -85,6 +89,8 @@ def categorize(action: str) -> str:
 def expand_include_path(raw, base):
     """Upstream expandPath: $VAR/${VAR} env expansion, ~ and ~/, then resolve
     relative to the including file's directory."""
+    if not isinstance(raw, str) or not raw:
+        return ""
     expanded = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), ""), raw)
     expanded = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", lambda m: os.environ.get(m.group(1), ""), expanded)
     if expanded == "~" or expanded.startswith("~/"):
@@ -119,47 +125,69 @@ class Parser:
                 f"(upstream Umbriel rejects the whole config load on this error)")
             return
         base = os.path.dirname(path)
-        mk = data.get("general", {}).get("mod_key")
+        if not isinstance(data, dict):
+            self.errors.append(
+                f"Could not parse {os.path.basename(path)}: root structure must be a TOML table "
+                f"(upstream Umbriel rejects the whole config load on this error)")
+            return
+
+        gen = data.get("general")
+        mk = gen.get("mod_key") if isinstance(gen, dict) else None
         if mk:
-            self.mod_keys.append((os.path.basename(path), mk))
-        inc = data.get("include", {})
-        for f in inc.get("files", []):
-            fp = expand_include_path(f, base)
-            if os.path.exists(fp):
-                self.parse(fp)
-            else:
-                self.warnings.append(
-                    f"Required include not found: {f} (from {os.path.basename(path)}); "
-                    f"binds from it are MISSING above")
-        for f in inc.get("optional", {}).get("files", []):
-            fp = expand_include_path(f, base)
-            if os.path.exists(fp):
-                self.parse(fp)
+            self.mod_keys.append((os.path.basename(path), str(mk)))
+
+        inc = data.get("include")
+        if isinstance(inc, dict):
+            files = inc.get("files", [])
+            if isinstance(files, list):
+                for f in files:
+                    if isinstance(f, str):
+                        fp = expand_include_path(f, base)
+                        if fp and os.path.exists(fp):
+                            self.parse(fp)
+                        else:
+                            self.warnings.append(
+                                f"Required include not found: {f} (from {os.path.basename(path)}); "
+                                f"binds from it are MISSING above")
+            opt = inc.get("optional")
+            if isinstance(opt, dict):
+                opt_files = opt.get("files", [])
+                if isinstance(opt_files, list):
+                    for f in opt_files:
+                        if isinstance(f, str):
+                            fp = expand_include_path(f, base)
+                            if fp and os.path.exists(fp):
+                                self.parse(fp)
+
         self.order += 1
-        for raw_key, val in data.get("keybinds", {}).items():
-            key = raw_key.strip()
-            context = "default"
-            m = SUBMAP_RE.match(key)
-            if m:
-                context, key = m.group(1), m.group(2)
-            entry = {"key": key, "context": context,
-                     "source": os.path.basename(path), "order": self.order}
-            if isinstance(val, str):
-                entry.update(action=val, flags={}, unknown_flags={}, unparsed=False, raw=val)
-            elif isinstance(val, dict):
-                action = val.get("action")
-                entry.update(
-                    action=action if isinstance(action, str) else "",
-                    flags={k: v for k, v in val.items() if k in KNOWN_FLAGS and k != "action"},
-                    unknown_flags={k: v for k, v in val.items() if k not in KNOWN_FLAGS and k != "action"},
-                    unparsed=not isinstance(action, str),
-                    raw=json.dumps(val),
-                )
-            else:
-                entry.update(action="", flags={}, unknown_flags={}, unparsed=True, raw=json.dumps(val))
-            entry["label"] = clean_label(entry["action"]) if entry["action"] else "(could not parse this bind)"
-            entry["category"] = categorize(entry["action"]) if entry["action"] else "Unparsed"
-            self.binds.append(entry)
+        keybinds = data.get("keybinds")
+        if isinstance(keybinds, dict):
+            for raw_key, val in keybinds.items():
+                if not isinstance(raw_key, str):
+                    continue
+                key = raw_key.strip()
+                context = "default"
+                m = SUBMAP_RE.match(key)
+                if m:
+                    context, key = m.group(1).strip(), m.group(2).strip()
+                entry = {"key": key, "context": context,
+                         "source": os.path.basename(path), "order": self.order}
+                if isinstance(val, str):
+                    entry.update(action=val, flags={}, unknown_flags={}, unparsed=False, raw=val)
+                elif isinstance(val, dict):
+                    action = val.get("action")
+                    entry.update(
+                        action=action if isinstance(action, str) else "",
+                        flags={k: v for k, v in val.items() if k in KNOWN_FLAGS and k != "action"},
+                        unknown_flags={k: v for k, v in val.items() if k not in KNOWN_FLAGS and k != "action"},
+                        unparsed=not isinstance(action, str),
+                        raw=json.dumps(val),
+                    )
+                else:
+                    entry.update(action="", flags={}, unknown_flags={}, unparsed=True, raw=json.dumps(val))
+                entry["label"] = clean_label(entry["action"]) if entry["action"] else "(could not parse this bind)"
+                entry["category"] = categorize(entry["action"]) if entry["action"] else "Unparsed"
+                self.binds.append(entry)
 
     def dedupe(self):
         """Verified against umbriel src/config/config_merge.cpp deepMerge:
