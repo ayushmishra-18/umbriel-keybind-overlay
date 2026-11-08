@@ -35,18 +35,36 @@ FORBIDDEN_FAMILIES = (
     "config-",
     "output-",
     "input-capture-",
+    "dpms-",
 )
 
 
+def split_action(action: str) -> list[str] | None:
+    """Safely split action string into argv list using POSIX rules.
+    Returns None if action syntax is malformed (e.g. unclosed quotes).
+    """
+    if not action or not action.strip():
+        return []
+    try:
+        return shlex.split(action, posix=True)
+    except ValueError:
+        return None
+
+
 def is_executable_action(action: str) -> bool:
-    """Returns False if the action belongs to a forbidden family."""
+    """Returns False if the action belongs to a forbidden family or has malformed syntax."""
     if not action or not action.strip():
         return False
-    words = shlex.split(action, posix=True)
+    parts = action.strip().split(None, 1)
+    head = parts[0]
+    if any(head.startswith(fam) for fam in FORBIDDEN_FAMILIES):
+        return False
+    if head == "spawn":
+        return True
+    words = split_action(action)
     if not words:
         return False
-    cmd = words[0]
-    return not any(cmd.startswith(fam) for fam in FORBIDDEN_FAMILIES)
+    return not any(words[0].startswith(fam) for fam in FORBIDDEN_FAMILIES)
 
 
 def format_action_title(action: str, default_label: str = "") -> str:
@@ -403,6 +421,9 @@ class KeybindOverlay(Gtk.Window):
         )
         self.connect("realize", self._on_window_realize)
 
+        self._executing = False
+        self._destroyed = False
+
         self._load_css()
         self._build_ui()
         self._load_config()
@@ -527,6 +548,8 @@ class KeybindOverlay(Gtk.Window):
             self.set_status(f"Failed to load config: {e}", "error")
 
     def set_status(self, text: str, status_type: str = "info"):
+        if getattr(self, "_destroyed", False):
+            return
         ctx = self.status_label.get_style_context()
         ctx.remove_class("status-info")
         ctx.remove_class("status-ok")
@@ -803,71 +826,119 @@ class KeybindOverlay(Gtk.Window):
                 self.search_entry.grab_focus()
 
     def _execute_bind(self, bind: dict):
+        if getattr(self, "_executing", False) or getattr(self, "_destroyed", False):
+            return
+
         action = bind.get("action", "")
         if not action or not action.strip():
             return
 
-        # 1. Hard safety exclusion check
-        if not is_executable_action(action):
-            words = shlex.split(action, posix=True)
-            first_word = words[0] if words else action
+        lstripped = action.lstrip()
+        parts = lstripped.split(None, 1)
+        head = parts[0]
+        remainder = parts[1] if len(parts) > 1 else None
+
+        # 1. Hard safety exclusion check on head
+        if any(head.startswith(fam) for fam in FORBIDDEN_FAMILIES):
             self.set_status(
-                f"Action '{first_word}' is excluded from overlay execution for safety",
+                f"Action '{head}' is excluded from overlay execution for safety",
                 "error"
             )
             return
 
-        # 2. Strict Safety Gate check: verify compositor is alive AND targets exact instance
-        safe, msg = verify_safety_gate(
-            self.config_path,
-            scratch_config=self.scratch_config,
-            scratch_cache=self.scratch_cache
-        )
-        if not safe:
-            self.set_status(msg, "error")
-            return
+        # 2. Argument preparation: spawn passes raw tail; others split words
+        if head == "spawn":
+            if remainder is not None and remainder != "":
+                parsed_argv = ["spawn", remainder]
+            else:
+                parsed_argv = ["spawn"]
+        else:
+            action_argv = split_action(action)
+            if action_argv is None:
+                self.set_status(f"Invalid action syntax: unclosed quotation in '{action}'", "error")
+                return
 
-        # 3. Argument splitting with shlex.split (POSIX mode)
-        try:
+            if not action_argv:
+                return
+
+            first_word = action_argv[0]
+            if any(first_word.startswith(fam) for fam in FORBIDDEN_FAMILIES):
+                self.set_status(
+                    f"Action '{first_word}' is excluded from overlay execution for safety",
+                    "error"
+                )
+                return
+
+            parsed_argv = list(action_argv)
+
+        # 3. Non-blocking off-thread execution
+        self._executing = True
+        config_path = str(self.config_path) if self.config_path else ""
+        scratch_config = str(self.scratch_config) if self.scratch_config else None
+        scratch_cache = str(self.scratch_cache) if self.scratch_cache else None
+        flags = bind.get("flags") or {}
+        submap_after = flags.get("submap")
+        submap_after_str = str(submap_after) if submap_after else None
+
+        def worker():
+            def finish(callback):
+                def idle_cb():
+                    self._executing = False
+                    if not getattr(self, "_destroyed", False):
+                        callback()
+                    return False
+                GLib.idle_add(idle_cb)
+
             try:
-                action_argv = shlex.split(action, posix=True)
-            except ValueError as e:
-                self.set_status(f"Invalid action syntax: {e}", "error")
-                return
-
-            cmd = ["umbriel", "msg"] + action_argv
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-            stdout = (res.stdout or "").strip()
-            stderr = (res.stderr or "").strip()
-            raw_out = stdout or stderr
-            if raw_out:
-                try:
-                    resp_json = json.loads(raw_out)
-                    if isinstance(resp_json, dict) and "err" in resp_json and resp_json["err"]:
-                        self.set_status(f"Error: {resp_json['err']}", "error")
-                        return
-                except Exception:
-                    pass
-
-            if res.returncode != 0:
-                err_msg = raw_out or f"Exit code {res.returncode}"
-                self.set_status(f"Compositor error: {err_msg}", "error")
-                return
-
-            # 4. Handle submap-after: if bind has flags.submap, apply it now
-            flags = bind.get("flags") or {}
-            submap_after = flags.get("submap")
-            if submap_after:
-                sub_cmd = ["umbriel", "msg", "submap", str(submap_after)]
-                sub_res = subprocess.run(sub_cmd, capture_output=True, text=True, timeout=3)
-                if sub_res.returncode != 0:
-                    self.set_status(f"Failed to apply submap {submap_after}", "error")
+                # Strict Safety Gate check: verify compositor is alive AND targets exact instance
+                safe, msg = verify_safety_gate(
+                    config_path,
+                    scratch_config=scratch_config,
+                    scratch_cache=scratch_cache
+                )
+                if not safe:
+                    finish(lambda: self.set_status(msg, "error"))
                     return
 
-            # Clean success: close overlay
-            Gtk.main_quit()
-        except Exception as e:
-            self.set_status(f"Execution failed: {e}", "error")
+                # Argument execution with umbriel msg
+                cmd = ["umbriel", "msg"] + parsed_argv
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+                stdout = (res.stdout or "").strip()
+                stderr = (res.stderr or "").strip()
+                raw_out = stdout or stderr
+                if raw_out:
+                    try:
+                        resp_json = json.loads(raw_out)
+                        if isinstance(resp_json, dict) and "err" in resp_json and resp_json["err"]:
+                            err_msg = resp_json["err"]
+                            finish(lambda: self.set_status(f"Error: {err_msg}", "error"))
+                            return
+                    except Exception:
+                        pass
+
+                if res.returncode != 0:
+                    err_msg = raw_out or f"Exit code {res.returncode}"
+                    finish(lambda: self.set_status(f"Compositor error: {err_msg}", "error"))
+                    return
+
+                # Handle submap-after: if bind has flags.submap, apply it now
+                if submap_after_str:
+                    sub_cmd = ["umbriel", "msg", "submap", submap_after_str]
+                    sub_res = subprocess.run(sub_cmd, capture_output=True, text=True, timeout=3)
+                    if sub_res.returncode != 0:
+                        finish(lambda: self.set_status(f"Failed to apply submap {submap_after_str}", "error"))
+                        return
+
+                # Clean success: close overlay
+                finish(lambda: Gtk.main_quit())
+
+            except Exception as e:
+                err_text = str(e)
+                finish(lambda: self.set_status(f"Execution failed: {err_text}", "error"))
+
+        t = threading.Thread(target=worker, daemon=True)
+        self._worker_thread = t
+        t.start()
 
     def _on_window_key_press(self, widget, event):
         keyval = event.keyval
@@ -911,6 +982,8 @@ class KeybindOverlay(Gtk.Window):
         return False
 
     def _on_destroy(self, widget):
+        self._destroyed = True
+        self._executing = False
         if self.submap_listener_proc:
             try:
                 self.submap_listener_proc.terminate()
