@@ -237,6 +237,8 @@ mod_key = "alt"
 
     def test_03_mouse_hover_and_keyboard_sync(self):
         """Verify mouse hover updates selection and keyboard navigation stays in sync."""
+        res = subprocess.run([WLR_PTR_BIN, "50", "50", "0", "908", "1038"])
+        self.assertEqual(res.returncode, 0, "wlr_ptr pre-positioning failed")
         app = overlay.KeybindOverlay(self.config_path, scratch_config=self.config_path, scratch_cache=self.cache_dir)
         app.show_all()
         pump_gtk_events(0.4)
