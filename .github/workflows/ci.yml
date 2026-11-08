@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 gir1.2-pango-1.0
+
+      - name: Check shell script syntax
+        run: |
+          bash -n scripts/run-nested.sh
+
+      - name: Byte-compile Python sources
+        run: |
+          python3 -m py_compile overlay.py umbriel_keys.py
+
+      # Headless test suites only.
+      # Note: tests/test_live_session.py, tests/test_native_session.py, and tests/test_ui_refinement.py
+      # are excluded from CI because they require a live running Wayland compositor,
+      # an active display environment, and native virtual pointer hardware/protocol support.
+      - name: Run headless unit test suites
+        run: |
+          python3 -m unittest -v tests.test_overlay tests.test_run_nested
