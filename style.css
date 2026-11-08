@@ -5,15 +5,15 @@ window {
 }
 
 .main-container {
-    background-color: #181825;
-    border: 1px solid #313244;
+    background-color: #1e1e2e;
+    border: 1px solid #585b70;
     border-radius: 12px;
     padding: 12px;
 }
 
 /* Header & Search Bar */
 .search-box {
-    background-color: #1e1e2e;
+    background-color: #181825;
     border: 1px solid #45475a;
     border-radius: 8px;
     padding: 6px 10px;
@@ -70,11 +70,11 @@ window {
 }
 
 .result-row:hover {
-    background-color: #24273a;
+    background-color: #313244;
 }
 
 .result-row:selected {
-    background-color: #313244;
+    background-color: #45475a;
 }
 
 .action-title {

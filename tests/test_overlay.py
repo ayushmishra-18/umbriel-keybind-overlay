@@ -732,6 +732,94 @@ class TestSpawnTailPassthrough(unittest.TestCase):
             self.assertIn("excluded from overlay execution", app3.status_calls[0][0])
 
 
+class TestNestedLauncher(unittest.TestCase):
+    def test_launcher_script_exists_and_executable(self):
+        script_path = os.path.join(PROJECT_DIR, "scripts", "run-nested.sh")
+        self.assertTrue(os.path.isfile(script_path), "scripts/run-nested.sh must exist")
+        self.assertTrue(os.access(script_path, os.X_OK), "scripts/run-nested.sh must be executable")
+
+    def test_launcher_bash_syntax(self):
+        script_path = os.path.join(PROJECT_DIR, "scripts", "run-nested.sh")
+        res = subprocess.run(["bash", "-n", script_path], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Bash syntax error in {script_path}: {res.stderr}")
+
+    def test_launcher_bakes_cursor_configuration(self):
+        """Verify launcher configures cursor workaround for nested sessions."""
+        script_path = os.path.join(PROJECT_DIR, "scripts", "run-nested.sh")
+        with open(script_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("[input.cursor]", content)
+        self.assertIn('theme = "Adwaita"', content)
+        self.assertIn("size = 24", content)
+        self.assertIn("hardware_cursor = false", content)
+        self.assertIn("COMPOSITOR_PID", content)
+        self.assertIn("kill -TERM", content)
+
+    def test_launcher_popup_reopen_shortcut(self):
+        """Verify launcher adds Alt+Shift+Space popup reopen shortcut without error masking."""
+        script_path = os.path.join(PROJECT_DIR, "scripts", "run-nested.sh")
+        with open(script_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn('"Alt+Shift+Space"', content)
+        self.assertIn("repeat = false", content)
+        # Verify placed before [input.cursor]
+        pos_reopen = content.find('"Alt+Shift+Space"')
+        pos_cursor = content.find("\n[input.cursor]")
+        self.assertGreater(pos_reopen, 0)
+        self.assertGreater(pos_cursor, pos_reopen, "Alt+Shift+Space must be in [keybinds] before [input.cursor]")
+        # Verify no error masking || true
+        self.assertNotIn('overlay.py" -c "$SCRATCH_CONFIG" || true', content)
+        self.assertIn("OVERLAY_EXIT_CODE", content)
+
+    def test_reopen_shortcut_quoting_spaces_and_apostrophes(self):
+        """Verify shell quoting and TOML encoding for paths with spaces and apostrophes."""
+        import json, tempfile
+        dummy_path = "/tmp/tester's path with spaces/open-overlay.sh"
+        cmd = f"spawn {shlex.quote(dummy_path)}"
+        toml_val = json.dumps(cmd)
+        toml_line = f'"Alt+Shift+Space" = {{ action = {toml_val}, repeat = false }}'
+
+        # Verify parsing with overlay split_action
+        tokens = split_action(cmd)
+        self.assertEqual(tokens, ["spawn", dummy_path])
+
+        # Parse TOML and check the quoted command without requiring Umbriel.
+        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tf:
+            tf.write(toml_line)
+            tf.flush()
+            parsed = umbriel_keys._load(tf.name)
+        binding = parsed["Alt+Shift+Space"]
+        self.assertEqual(binding["action"], cmd)
+        self.assertFalse(binding["repeat"])
+
+    def test_reopen_shortcut_external_config_validation(self):
+        """Validate with Umbriel when an executable is installed."""
+        import json, shutil, tempfile
+        umbriel = shutil.which("umbriel")
+        if umbriel is None:
+            self.skipTest("Umbriel executable is unavailable; pure quoting/TOML checks run separately")
+        dummy_path = "/tmp/tester's path with spaces/open-overlay.sh"
+        toml_val = json.dumps("spawn " + shlex.quote(dummy_path))
+        toml_line = f'"Alt+Shift+Space" = {{ action = {toml_val}, repeat = false }}'
+
+        with open(os.path.join(PROJECT_DIR, "examples", "typical-desktop.toml"), "r") as f:
+            base_cfg = f.read()
+        test_cfg = f"{base_cfg}\n{toml_line}\n\n[input.cursor]\ntheme = \"Adwaita\"\nsize = 24\nhardware_cursor = false\n"
+        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tf:
+            tf.write(test_cfg)
+            tf.flush()
+            val_res = subprocess.run([umbriel, "config", "validate", "-c", tf.name], capture_output=True, text=True)
+            self.assertEqual(val_res.returncode, 0, f"Config validation failed: {val_res.stderr}")
+
+    def test_style_popup_elevation(self):
+        css_path = os.path.join(PROJECT_DIR, "style.css")
+        with open(css_path, "r", encoding="utf-8") as f:
+            css = f.read()
+        self.assertIn(".main-container", css)
+        self.assertIn("#1e1e2e", css)
+        self.assertIn("#585b70", css)
+
+
 class TestRowRendering(unittest.TestCase):
     def test_row_building_unbalanced_quote_action(self):
         """A row-building test with an unbalanced-quote action (verifies no raise +

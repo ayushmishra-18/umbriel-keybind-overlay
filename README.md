@@ -65,9 +65,40 @@ The overlay employs a five-layer defense-in-depth architecture to ensure actions
 
 ## Quickstart: Safe Nested Session (Recommended)
 
-The recommended way to test and evaluate the overlay locally is inside an isolated nested Umbriel session:
+The easiest and safest way to evaluate the overlay is via the one-command nested launcher from the repository root:
 
-### 1. Launch a Nested Umbriel Session
+```bash
+./scripts/run-nested.sh
+```
+
+This single command:
+1. Creates an isolated temporary scratch environment (`/tmp/umbriel-trial.XXXXXX`).
+2. Configures nested-session cursor workaround settings (`theme = "Adwaita"`, `size = 24`, and `hardware_cursor = false`) so the mouse pointer remains visible over the nested compositor window.
+3. Spawns nested Umbriel with `examples/typical-desktop.toml` on a dedicated Wayland display.
+4. Closes the nested session's built-in cheatsheet to prevent overlay occlusion.
+5. Launches the keybind overlay popup targeting the nested session.
+
+> [!NOTE]
+> - **Modifier Key**: The example config explicitly sets `Mod` to `Super`. The reopen shortcut uses explicit `Alt+Shift+Space`, independent of `Mod`.
+> - **Session Persistence & Reopening**: When the overlay closes (after running an action or pressing `Escape`), the nested session and any launched apps (such as terminals) stay alive. Press `Alt+Shift+Space` in the nested window to reopen the overlay. When you are done, press `Enter` in the terminal running `run-nested.sh` to cleanly stop the nested compositor.
+> - **Host vs. Nested Clipboard Boundary**: Wayland isolates clipboards between distinct compositor instances by design. Text copied on your host desktop does not pass through to the nested session clipboard. To test `Ctrl+V` pasting in the search box, copy text from an application running inside the nested session (e.g. nested terminal via `Ctrl+Shift+C`) or via `wl-copy` within the nested session.
+
+### Controls
+
+- **Type**: Plain text search across key chords, action commands, titles, and categories.
+- **`↑` / `↓`** (or **`Ctrl+K` / `Ctrl+J`**): Move selection up and down.
+- **Mouse Hover**: Pointer motion over a row moves the selection highlight.
+- **`Enter` or Single-Click**: Execute the selected/clicked action and close the overlay.
+- **`Escape`**: Close the overlay immediately without executing.
+- **`Ctrl+R`**: Reload the configuration from disk.
+
+---
+
+### Manual Nested Session Setup (Appendix)
+
+If you prefer to run each step manually rather than using the launcher script:
+
+#### 1. Launch a Nested Umbriel Session
 
 ```bash
 # Create an isolated temporary environment
@@ -83,7 +114,7 @@ umbriel -c "$(pwd)/examples/typical-desktop.toml" &
 
 A nested Umbriel window will appear on your desktop.
 
-### 2. Launch the Overlay Against the Nested Session
+#### 2. Launch the Overlay Against the Nested Session
 
 ```bash
 # Resolve the nested session's display name
@@ -112,15 +143,6 @@ WAYLAND_DISPLAY="$DISPLAY_NAME" \
 UMBRIEL_SOCKET="/run/user/$UID/umbriel-$DISPLAY_NAME.sock" \
 python3 overlay.py -c "$(pwd)/examples/typical-desktop.toml"
 ```
-
-### Controls
-
-- **Type**: Plain text search across key chords, action commands, titles, and categories.
-- **`↑` / `↓`** (or **`Ctrl+K` / `Ctrl+J`**): Move selection up and down.
-- **Mouse Hover**: Pointer motion over a row moves the selection highlight.
-- **`Enter` or Single-Click**: Execute the selected/clicked action and close the overlay.
-- **`Escape`**: Close the overlay immediately without executing.
-- **`Ctrl+R`**: Reload the configuration from disk.
 
 ---
 
