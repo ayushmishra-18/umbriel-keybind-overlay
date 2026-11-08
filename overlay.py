@@ -352,6 +352,18 @@ def ensure_valid_cursor_theme():
                 break
 
 
+def split_chord(chord_str: str) -> list[str]:
+    """Splits a key chord string (e.g. 'Mod+B', 'Mod++', '+') into individual key parts."""
+    if not chord_str:
+        return []
+    if chord_str == "+":
+        return ["+"]
+    if chord_str.endswith("++"):
+        prefix = chord_str[:-2]
+        return (prefix.split("+") if prefix else []) + ["+"]
+    return chord_str.split("+")
+
+
 class KeybindOverlay(Gtk.Window):
     def __init__(self, config_path: str, scratch_config: str = None, scratch_cache: str = None):
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
@@ -404,12 +416,15 @@ class KeybindOverlay(Gtk.Window):
         css_provider = Gtk.CssProvider()
         css_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.css")
         if os.path.exists(css_path):
-            css_provider.load_from_path(css_path)
-            screen = Gdk.Screen.get_default()
-            if screen:
-                Gtk.StyleContext.add_provider_for_screen(
-                    screen, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-                )
+            try:
+                css_provider.load_from_path(css_path)
+                screen = Gdk.Screen.get_default()
+                if screen:
+                    Gtk.StyleContext.add_provider_for_screen(
+                        screen, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                    )
+            except GLib.Error as e:
+                sys.stderr.write(f"Warning: Failed to load style.css: {e}\n")
 
     def _build_ui(self):
         # Outer container (content-responsive sizing)
@@ -494,8 +509,19 @@ class KeybindOverlay(Gtk.Window):
         """Loads or reloads keybindings from the config file using umbriel_keys."""
         try:
             data = umbriel_keys.build(self.config_path)
+            errors = data.get("errors", [])
+            if errors:
+                self.binds_data = data.get("binds", [])
+                self.set_status(f"Config error: {errors[0]}", "error")
+                self._filter_and_render()
+                return
+
             self.binds_data = data.get("binds", [])
-            self.set_status(f"Loaded {len(self.binds_data)} bindings from {os.path.basename(self.config_path)}", "info")
+            warnings = data.get("warnings", [])
+            if warnings:
+                self.set_status(f"Loaded {len(self.binds_data)} bindings ({warnings[0]})", "info")
+            else:
+                self.set_status(f"Loaded {len(self.binds_data)} bindings from {os.path.basename(self.config_path)}", "info")
             self._filter_and_render()
         except Exception as e:
             self.set_status(f"Failed to load config: {e}", "error")
@@ -579,7 +605,8 @@ class KeybindOverlay(Gtk.Window):
     def _render_chord(self, chord_str: str) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         box.get_style_context().add_class("keycap-container")
-        parts = chord_str.split("+")
+        parts = split_chord(chord_str)
+
         for i, part in enumerate(parts):
             if i > 0:
                 plus = Gtk.Label(label="+")
@@ -777,7 +804,7 @@ class KeybindOverlay(Gtk.Window):
 
     def _execute_bind(self, bind: dict):
         action = bind.get("action", "")
-        if not action:
+        if not action or not action.strip():
             return
 
         # 1. Hard safety exclusion check
@@ -801,12 +828,18 @@ class KeybindOverlay(Gtk.Window):
             return
 
         # 3. Argument splitting with shlex.split (POSIX mode)
-        action_argv = shlex.split(action, posix=True)
-        cmd = ["umbriel", "msg"] + action_argv
-
         try:
+            try:
+                action_argv = shlex.split(action, posix=True)
+            except ValueError as e:
+                self.set_status(f"Invalid action syntax: {e}", "error")
+                return
+
+            cmd = ["umbriel", "msg"] + action_argv
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
-            raw_out = (res.stdout or res.stderr).strip()
+            stdout = (res.stdout or "").strip()
+            stderr = (res.stderr or "").strip()
+            raw_out = stdout or stderr
             if raw_out:
                 try:
                     resp_json = json.loads(raw_out)
@@ -856,17 +889,19 @@ class KeybindOverlay(Gtk.Window):
 
         if is_up or is_down:
             row = self.listbox.get_selected_row()
-            if row:
-                idx = row.get_index()
-                total = len(self.current_filtered_binds)
-                if total > 0:
+            total = len(self.current_filtered_binds)
+            if total > 0:
+                if row:
+                    idx = row.get_index()
                     new_idx = max(0, min(total - 1, idx - 1 if is_up else idx + 1))
-                    target_row = self.listbox.get_row_at_index(new_idx)
-                    if target_row:
-                        self.listbox.select_row(target_row)
-                        adj = self.scrolled.get_vadjustment()
-                        alloc = target_row.get_allocation()
-                        adj.clamp_page(alloc.y, alloc.y + alloc.height)
+                else:
+                    new_idx = 0
+                target_row = self.listbox.get_row_at_index(new_idx)
+                if target_row:
+                    self.listbox.select_row(target_row)
+                    adj = self.scrolled.get_vadjustment()
+                    alloc = target_row.get_allocation()
+                    adj.clamp_page(alloc.y, alloc.y + alloc.height)
             return True
 
         # Forward typing to search entry if focus wandered
@@ -879,8 +914,14 @@ class KeybindOverlay(Gtk.Window):
         if self.submap_listener_proc:
             try:
                 self.submap_listener_proc.terminate()
+                self.submap_listener_proc.wait(timeout=0.5)
             except Exception:
                 pass
+            if self.submap_listener_proc.stdout:
+                try:
+                    self.submap_listener_proc.stdout.close()
+                except Exception:
+                    pass
 
 
 def acquire_single_instance_lock(display: str):
@@ -943,7 +984,10 @@ def main():
         scratch_cache=args.scratch_cache
     )
     overlay.show_all()
-    Gtk.main()
+    try:
+        Gtk.main()
+    finally:
+        overlay.destroy()
 
 
 if __name__ == "__main__":
