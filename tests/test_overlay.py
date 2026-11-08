@@ -357,6 +357,14 @@ class TestSplitAction(unittest.TestCase):
         self.assertEqual(split_action(None), [])
 
 
+def _make_mock_proc(stdout="", stderr="", returncode=0):
+    proc = unittest.mock.MagicMock()
+    proc.returncode = returncode
+    proc.poll.return_value = returncode
+    proc.communicate.return_value = (stdout, stderr)
+    return proc
+
+
 class TestNonBlockingExecution(unittest.TestCase):
     def setUp(self):
         self.ctx = GLib.MainContext.default()
@@ -375,6 +383,9 @@ class TestNonBlockingExecution(unittest.TestCase):
             def __init__(self):
                 self._executing = False
                 self._destroyed = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
                 self.config_path = "/path/to/config.toml"
                 self.scratch_config = None
                 self.scratch_cache = None
@@ -387,7 +398,7 @@ class TestNonBlockingExecution(unittest.TestCase):
         bind = {"action": 'window-open "unbalanced'}
 
         with unittest.mock.patch("overlay.verify_safety_gate", mock_gate), \
-             unittest.mock.patch("subprocess.run", mock_subproc):
+             unittest.mock.patch("subprocess.Popen", mock_subproc):
             overlay.KeybindOverlay._execute_bind(app, bind)
 
         mock_gate.assert_not_called()
@@ -415,6 +426,9 @@ class TestNonBlockingExecution(unittest.TestCase):
             def __init__(self):
                 self._executing = False
                 self._destroyed = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
                 self.config_path = "/path/to/config.toml"
                 self.scratch_config = None
                 self.scratch_cache = None
@@ -424,11 +438,11 @@ class TestNonBlockingExecution(unittest.TestCase):
                 self.status_calls.append((text, status_type))
 
         app = DummyOverlay()
-        mock_subproc = unittest.mock.MagicMock()
-        mock_subproc.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
+        mock_proc = _make_mock_proc()
+        mock_subproc = unittest.mock.MagicMock(return_value=mock_proc)
 
         with unittest.mock.patch("overlay.verify_safety_gate", side_effect=slow_gate), \
-             unittest.mock.patch("subprocess.run", mock_subproc), \
+             unittest.mock.patch("subprocess.Popen", mock_subproc), \
              unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
 
             bind1 = {"action": "window-close"}
@@ -448,7 +462,7 @@ class TestNonBlockingExecution(unittest.TestCase):
 
             self.assertEqual(gate_call_count[0], 1, "Gate must only be called once")
             self.assertEqual(mock_subproc.call_count, 1, "Subprocess must only be spawned once")
-            mock_subproc.assert_called_once_with(["umbriel", "msg", "window-close"], capture_output=True, text=True, timeout=3)
+            mock_subproc.assert_called_once_with(["umbriel", "msg", "window-close"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.assertFalse(app._executing, "Flag must reset after completion")
             mock_quit.assert_called_once()
 
@@ -459,6 +473,9 @@ class TestNonBlockingExecution(unittest.TestCase):
             def __init__(self):
                 self._executing = False
                 self._destroyed = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
                 self.config_path = "/path/to/config.toml"
                 self.scratch_config = None
                 self.scratch_cache = None
@@ -471,7 +488,7 @@ class TestNonBlockingExecution(unittest.TestCase):
 
         # Part 1: Gate failure
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(False, "Compositor mismatch")), \
-             unittest.mock.patch("subprocess.run") as mock_sub:
+             unittest.mock.patch("subprocess.Popen") as mock_sub:
             overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
@@ -483,7 +500,7 @@ class TestNonBlockingExecution(unittest.TestCase):
 
         # Part 2: Subprocess error (non-zero exit)
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-             unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(args=["umbriel"], returncode=1, stdout="", stderr="IPC failure")):
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc(stderr="IPC failure", returncode=1)):
             overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
@@ -494,7 +511,7 @@ class TestNonBlockingExecution(unittest.TestCase):
 
         # Part 3: Subsequent execution succeeds cleanly
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-             unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")), \
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()), \
              unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
             overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
             if hasattr(app, "_worker_thread"):
@@ -516,6 +533,9 @@ class TestNonBlockingExecution(unittest.TestCase):
             def __init__(self):
                 self._executing = False
                 self._destroyed = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
                 self.config_path = "/path/to/config.toml"
                 self.scratch_config = None
                 self.scratch_cache = None
@@ -529,11 +549,12 @@ class TestNonBlockingExecution(unittest.TestCase):
         app = DummyOverlay()
 
         with unittest.mock.patch("overlay.verify_safety_gate", side_effect=gate_wait), \
-             unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")), \
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()), \
              unittest.mock.patch("gi.repository.Gtk.main_quit", side_effect=RuntimeError("Called main_quit on destroyed widget!")):
 
             overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
             app._destroyed = True
+            app._cancel_event.set()
             worker_can_finish.set()
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
@@ -560,6 +581,9 @@ class TestSpawnTailPassthrough(unittest.TestCase):
             def __init__(self):
                 self._executing = False
                 self._destroyed = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
                 self.config_path = "/path/to/config.toml"
                 self.scratch_config = None
                 self.scratch_cache = None
@@ -578,16 +602,15 @@ class TestSpawnTailPassthrough(unittest.TestCase):
         app = self._make_dummy_app()
         action = "spawn printf '%s\\n' \"hello world\" > out.txt"
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-             unittest.mock.patch("subprocess.run") as mock_sub, \
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub, \
              unittest.mock.patch("gi.repository.Gtk.main_quit"):
-            mock_sub.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
             overlay.KeybindOverlay._execute_bind(app, {"action": action})
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
             self._drain_idle()
 
             expected_cmd = ["umbriel", "msg", "spawn", "printf '%s\\n' \"hello world\" > out.txt"]
-            mock_sub.assert_called_once_with(expected_cmd, capture_output=True, text=True, timeout=3)
+            mock_sub.assert_called_once_with(expected_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def test_spawn_tail_preservation_cases(self):
         """Tail preservation across:
@@ -608,16 +631,15 @@ class TestSpawnTailPassthrough(unittest.TestCase):
             with self.subTest(action=action):
                 app = self._make_dummy_app()
                 with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-                     unittest.mock.patch("subprocess.run") as mock_sub, \
+                     unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub, \
                      unittest.mock.patch("gi.repository.Gtk.main_quit"):
-                    mock_sub.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
                     overlay.KeybindOverlay._execute_bind(app, {"action": action})
                     if hasattr(app, "_worker_thread"):
                         app._worker_thread.join(timeout=1.0)
                     self._drain_idle()
 
                     expected_cmd = ["umbriel", "msg", "spawn", expected_tail]
-                    mock_sub.assert_called_once_with(expected_cmd, capture_output=True, text=True, timeout=3)
+                    mock_sub.assert_called_once_with(expected_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def test_spawn_empty_and_whitespace_only(self):
         """Empty spawn passes as ['umbriel', 'msg', 'spawn']"""
@@ -625,31 +647,29 @@ class TestSpawnTailPassthrough(unittest.TestCase):
             with self.subTest(action=act):
                 app = self._make_dummy_app()
                 with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-                     unittest.mock.patch("subprocess.run") as mock_sub, \
+                     unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub, \
                      unittest.mock.patch("gi.repository.Gtk.main_quit"):
-                    mock_sub.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
                     overlay.KeybindOverlay._execute_bind(app, {"action": act})
                     if hasattr(app, "_worker_thread"):
                         app._worker_thread.join(timeout=1.0)
                     self._drain_idle()
 
-                    mock_sub.assert_called_once_with(["umbriel", "msg", "spawn"], capture_output=True, text=True, timeout=3)
+                    mock_sub.assert_called_once_with(["umbriel", "msg", "spawn"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def test_spawn_unbalanced_quote_passed_raw(self):
         """An unbalanced quote in a spawn tail is passed through raw with no parse error."""
         app = self._make_dummy_app()
         action = 'spawn printf "%s'
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")) as mock_gate, \
-             unittest.mock.patch("subprocess.run") as mock_sub, \
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub, \
              unittest.mock.patch("gi.repository.Gtk.main_quit"):
-            mock_sub.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
             overlay.KeybindOverlay._execute_bind(app, {"action": action})
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
             self._drain_idle()
 
             mock_gate.assert_called_once()
-            mock_sub.assert_called_once_with(["umbriel", "msg", "spawn", 'printf "%s'], capture_output=True, text=True, timeout=3)
+            mock_sub.assert_called_once_with(["umbriel", "msg", "spawn", 'printf "%s'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def test_non_spawn_unbalanced_quote_sets_error_status(self):
         """In a non-spawn action, an unbalanced quote sets an error status, does not raise,
@@ -657,7 +677,7 @@ class TestSpawnTailPassthrough(unittest.TestCase):
         app = self._make_dummy_app()
         action = 'window-open "unbalanced'
         with unittest.mock.patch("overlay.verify_safety_gate") as mock_gate, \
-             unittest.mock.patch("subprocess.run") as mock_sub:
+             unittest.mock.patch("subprocess.Popen") as mock_sub:
             overlay.KeybindOverlay._execute_bind(app, {"action": action})
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
@@ -670,7 +690,7 @@ class TestSpawnTailPassthrough(unittest.TestCase):
             self.assertIn("Invalid action syntax", app.status_calls[0][0])
 
     def test_non_spawn_actions_arrive_as_separate_words(self):
-        """Non-spawn actions still arrive at subprocess.run as separate words."""
+        """Non-spawn actions still arrive at subprocess.Popen as separate words."""
         cases = [
             ("submap reset", ["umbriel", "msg", "submap", "reset"]),
             ("workspace-switch 2 --output DP-1", ["umbriel", "msg", "workspace-switch", "2", "--output", "DP-1"]),
@@ -680,15 +700,14 @@ class TestSpawnTailPassthrough(unittest.TestCase):
             with self.subTest(action=action):
                 app = self._make_dummy_app()
                 with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-                     unittest.mock.patch("subprocess.run") as mock_sub, \
+                     unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub, \
                      unittest.mock.patch("gi.repository.Gtk.main_quit"):
-                    mock_sub.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
                     overlay.KeybindOverlay._execute_bind(app, {"action": action})
                     if hasattr(app, "_worker_thread"):
                         app._worker_thread.join(timeout=1.0)
                     self._drain_idle()
 
-                    mock_sub.assert_called_once_with(expected_cmd, capture_output=True, text=True, timeout=3)
+                    mock_sub.assert_called_once_with(expected_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def test_head_only_family_check(self):
         """Head-only family check: the forbidden-family decision uses only the first word,
@@ -696,31 +715,30 @@ class TestSpawnTailPassthrough(unittest.TestCase):
         # 'spawn dpms-off' should be allowed to run (head is spawn)
         app = self._make_dummy_app()
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-             unittest.mock.patch("subprocess.run") as mock_sub, \
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub, \
              unittest.mock.patch("gi.repository.Gtk.main_quit"):
-            mock_sub.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
             overlay.KeybindOverlay._execute_bind(app, {"action": "spawn dpms-off"})
             if hasattr(app, "_worker_thread"):
                 app._worker_thread.join(timeout=1.0)
             self._drain_idle()
-            mock_sub.assert_called_once_with(["umbriel", "msg", "spawn", "dpms-off"], capture_output=True, text=True, timeout=3)
+            mock_sub.assert_called_once_with(["umbriel", "msg", "spawn", "dpms-off"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # 'window-close dpms-off' should be allowed to run (head is window-close)
         app2 = self._make_dummy_app()
         with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
-             unittest.mock.patch("subprocess.run") as mock_sub2, \
+             unittest.mock.patch("subprocess.Popen", return_value=_make_mock_proc()) as mock_sub2, \
              unittest.mock.patch("gi.repository.Gtk.main_quit"):
             mock_sub2.return_value = subprocess.CompletedProcess(args=["umbriel"], returncode=0, stdout="", stderr="")
             overlay.KeybindOverlay._execute_bind(app2, {"action": "window-close dpms-off"})
             if hasattr(app2, "_worker_thread"):
                 app2._worker_thread.join(timeout=1.0)
             self._drain_idle()
-            mock_sub2.assert_called_once_with(["umbriel", "msg", "window-close", "dpms-off"], capture_output=True, text=True, timeout=3)
+            mock_sub2.assert_called_once_with(["umbriel", "msg", "window-close", "dpms-off"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # 'dpms-off' itself is blocked at head
         app3 = self._make_dummy_app()
         with unittest.mock.patch("overlay.verify_safety_gate") as mock_gate, \
-             unittest.mock.patch("subprocess.run") as mock_sub3:
+             unittest.mock.patch("subprocess.Popen") as mock_sub3:
             overlay.KeybindOverlay._execute_bind(app3, {"action": "dpms-off"})
             if hasattr(app3, "_worker_thread"):
                 app3._worker_thread.join(timeout=1.0)
@@ -843,6 +861,408 @@ class TestRowRendering(unittest.TestCase):
 
         find_labels(row)
         self.assertIn("not executable", badges)
+
+
+class TestCancelBeforeDispatch(unittest.TestCase):
+    """Deliverable C: Cancel-before-dispatch regression tests."""
+
+    def setUp(self):
+        self.ctx = GLib.MainContext.default()
+
+    def _drain_idle(self):
+        while self.ctx.pending():
+            self.ctx.iteration(False)
+
+    def _make_app(self):
+        class DummyOverlay:
+            def __init__(self):
+                self._executing = False
+                self._destroyed = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
+                self.submap_listener_proc = None
+                self.config_path = "/path/to/config.toml"
+                self.scratch_config = None
+                self.scratch_cache = None
+                self.status_calls = []
+
+            def set_status(self, text, status_type="info"):
+                self.status_calls.append((text, status_type))
+
+            def _on_destroy(self, widget):
+                overlay.KeybindOverlay._on_destroy(self, widget)
+
+        return DummyOverlay()
+
+    def test_a_cancel_while_safety_gate_held(self):
+        """(a) Cancel while safety gate held: worker does not dispatch command after gate releases."""
+        app = self._make_app()
+        gate_started = threading.Event()
+        gate_release = threading.Event()
+
+        def slow_gate(*args, **kwargs):
+            gate_started.set()
+            gate_release.wait(timeout=2.0)
+            return (True, "ok")
+
+        mock_popen = unittest.mock.MagicMock()
+        mock_run = unittest.mock.MagicMock()
+        with unittest.mock.patch("overlay.verify_safety_gate", side_effect=slow_gate), \
+             unittest.mock.patch("subprocess.Popen", mock_popen), \
+             unittest.mock.patch("subprocess.run", mock_run), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
+            self.assertTrue(gate_started.wait(timeout=1.0))
+            self.assertTrue(app._executing)
+
+            # Destroy overlay while gate is evaluating
+            app._on_destroy(None)
+            self.assertTrue(app._cancel_event.is_set())
+            self.assertTrue(app._destroyed)
+
+            # Release gate
+            gate_release.set()
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            # Must assert that NO process was dispatched by any mechanism (Popen or run)
+            mock_popen.assert_not_called()
+            mock_run.assert_not_called()
+            mock_quit.assert_not_called()
+            self.assertFalse(app._executing)
+            self.assertEqual(len(app.status_calls), 0)
+
+    def test_cancel_during_process_registration_gap(self):
+        """Recheck cancellation when registering newly started process:
+        Forces the interleaving where destroy fires after spawn but before registration,
+        asserting the child was terminated, not registered, and no follow-up submap or main_quit ran."""
+        app = self._make_app()
+        bind = {"action": "window-toggle-maximize", "flags": {"submap": "window_sub"}}
+
+        child_terminated = threading.Event()
+        spawn_done = threading.Event()
+        allow_registration = threading.Event()
+
+        class EventControlledProc:
+            returncode = -15
+            def poll(self):
+                return None if not child_terminated.is_set() else -15
+            def terminate(self):
+                child_terminated.set()
+            def communicate(self, timeout=None):
+                if not child_terminated.is_set():
+                    raise subprocess.TimeoutExpired(cmd=["umbriel"], timeout=timeout or 3)
+                return ("", "terminated")
+
+        fake_proc = EventControlledProc()
+
+        def fake_popen(cmd, *args, **kwargs):
+            spawn_done.set()
+            allow_registration.wait(timeout=2.0)
+            return fake_proc
+
+        with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+             unittest.mock.patch("subprocess.Popen", side_effect=fake_popen), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, bind)
+
+            # Wait until Popen has spawned the process
+            self.assertTrue(spawn_done.wait(timeout=1.0))
+
+            # Overlay is destroyed AFTER spawn, BEFORE registration under _proc_lock
+            app._on_destroy(None)
+            self.assertTrue(app._destroyed)
+            self.assertIsNone(app._pending_proc, "Process must not be registered before _proc_lock")
+
+            # Now allow the spawn function to return and registration to proceed
+            allow_registration.set()
+
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            # Assert child was terminated immediately upon registration check
+            self.assertTrue(child_terminated.is_set(), "Child must be terminated immediately inside _proc_lock")
+            self.assertIsNone(app._pending_proc, "Cancelled process must not be registered")
+            mock_quit.assert_not_called()
+            self.assertFalse(app._executing)
+            self.assertEqual(len(app.status_calls), 0)
+
+    def test_cancel_during_submap_registration_gap(self):
+        """Recheck cancellation when registering newly started submap process:
+        Forces the interleaving where destroy fires after submap spawn but before registration,
+        asserting the submap child was terminated, not registered, and no main_quit ran."""
+        app = self._make_app()
+        bind = {"action": "window-toggle-maximize", "flags": {"submap": "window_sub"}}
+
+        child_terminated = threading.Event()
+        submap_spawn_done = threading.Event()
+        allow_submap_registration = threading.Event()
+
+        class FakePrimaryProc:
+            returncode = 0
+            def poll(self):
+                return 0
+            def communicate(self, timeout=None):
+                return ("", "")
+
+        class EventControlledSubmapProc:
+            returncode = -15
+            def poll(self):
+                return None if not child_terminated.is_set() else -15
+            def terminate(self):
+                child_terminated.set()
+            def communicate(self, timeout=None):
+                if not child_terminated.is_set():
+                    raise subprocess.TimeoutExpired(cmd=["umbriel"], timeout=timeout or 3)
+                return ("", "terminated")
+
+        fake_submap_proc = EventControlledSubmapProc()
+
+        def fake_popen(cmd, *args, **kwargs):
+            if "submap" in cmd:
+                submap_spawn_done.set()
+                allow_submap_registration.wait(timeout=2.0)
+                return fake_submap_proc
+            return FakePrimaryProc()
+
+        with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+             unittest.mock.patch("subprocess.Popen", side_effect=fake_popen), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, bind)
+
+            # Wait until submap Popen has spawned
+            self.assertTrue(submap_spawn_done.wait(timeout=1.0))
+
+            # Overlay is destroyed AFTER submap spawn, BEFORE submap registration
+            app._on_destroy(None)
+            self.assertTrue(app._destroyed)
+
+            # Now allow submap registration to proceed
+            allow_submap_registration.set()
+
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            self.assertTrue(child_terminated.is_set(), "Submap process must be terminated immediately inside _proc_lock")
+            self.assertIsNone(app._pending_proc, "Cancelled submap process must not be registered")
+            mock_quit.assert_not_called()
+            self.assertFalse(app._executing)
+            self.assertEqual(len(app.status_calls), 0)
+
+    def test_b_cancel_after_primary_before_submap(self):
+        """(b) Cancel after primary command before submap: follow-up submap is never dispatched."""
+        app = self._make_app()
+        bind = {"action": "window-toggle-maximize", "flags": {"submap": "window_sub"}}
+
+        popen_calls = []
+
+        class FakePrimaryProc:
+            returncode = 0
+            def poll(self):
+                return 0
+            def communicate(self, timeout=None):
+                # When primary communicate finishes, destroy the overlay before submap starts
+                app._on_destroy(None)
+                return ("", "")
+
+        def fake_popen(cmd, *args, **kwargs):
+            popen_calls.append(cmd)
+            return FakePrimaryProc()
+
+        with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+             unittest.mock.patch("subprocess.Popen", side_effect=fake_popen), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, bind)
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            self.assertEqual(len(popen_calls), 1)
+            self.assertEqual(popen_calls[0], ["umbriel", "msg", "window-toggle-maximize"])
+            # Follow-up submap command was cancelled and never launched
+            mock_quit.assert_not_called()
+            self.assertFalse(app._executing)
+
+    def test_c_cancel_while_umbriel_msg_child_running(self):
+        """(c) Cancel while umbriel msg child running: pending proc is terminated."""
+        app = self._make_app()
+        child_started = threading.Event()
+        child_terminated = threading.Event()
+
+        class HangingProc:
+            returncode = -15
+            def poll(self):
+                return None if not child_terminated.is_set() else -15
+            def terminate(self):
+                child_terminated.set()
+            def communicate(self, timeout=None):
+                child_started.set()
+                child_terminated.wait(timeout=2.0)
+                return ("", "terminated")
+
+        mock_hanging = HangingProc()
+        with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+             unittest.mock.patch("subprocess.Popen", return_value=mock_hanging), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, {"action": "window-focus-left"})
+            self.assertTrue(child_started.wait(timeout=1.0))
+
+            # While child is running, destroy the overlay
+            app._on_destroy(None)
+            self.assertTrue(child_terminated.is_set())
+
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            mock_quit.assert_not_called()
+            self.assertFalse(app._executing)
+            self.assertEqual(len(app.status_calls), 0)
+
+    def test_d_no_cancel_existing_behavior_preserved(self):
+        """(d) No cancel: primary command and follow-up submap both run and overlay closes."""
+        app = self._make_app()
+        bind = {"action": "window-focus-right", "flags": {"submap": "reset"}}
+        dispatched_cmds = []
+
+        class SuccessProc:
+            returncode = 0
+            def poll(self):
+                return 0
+            def communicate(self, timeout=None):
+                return ("", "")
+
+        def fake_popen(cmd, *args, **kwargs):
+            dispatched_cmds.append(cmd)
+            return SuccessProc()
+
+        with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+             unittest.mock.patch("subprocess.Popen", side_effect=fake_popen), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, bind)
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            self.assertEqual(len(dispatched_cmds), 2)
+            self.assertEqual(dispatched_cmds[0], ["umbriel", "msg", "window-focus-right"])
+            self.assertEqual(dispatched_cmds[1], ["umbriel", "msg", "submap", "reset"])
+            mock_quit.assert_called_once()
+            self.assertFalse(app._executing)
+
+    def test_e_timeout_child_killed_and_error_shown(self):
+        """(e) Timeout child killed and error shown when command hangs."""
+        app = self._make_app()
+        killed = threading.Event()
+
+        class TimeoutProc:
+            returncode = -9
+            def poll(self):
+                return None if not killed.is_set() else -9
+            def kill(self):
+                killed.set()
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired(cmd=["umbriel"], timeout=timeout)
+                return ("", "killed")
+
+        with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+             unittest.mock.patch("subprocess.Popen", return_value=TimeoutProc()), \
+             unittest.mock.patch("gi.repository.Gtk.main_quit") as mock_quit:
+
+            overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
+            app._worker_thread.join(timeout=1.0)
+            self._drain_idle()
+
+            self.assertTrue(killed.is_set())
+            mock_quit.assert_not_called()
+            self.assertFalse(app._executing)
+            self.assertEqual(len(app.status_calls), 1)
+            self.assertIn("Execution timed out after 3 seconds", app.status_calls[0][0])
+            self.assertEqual(app.status_calls[0][1], "error")
+
+    def test_f_double_trigger_blocked(self):
+        """(f) Double-trigger blocked: second call ignored while executing or cancelled."""
+        app = self._make_app()
+        app._executing = True
+
+        mock_gate = unittest.mock.MagicMock()
+        with unittest.mock.patch("overlay.verify_safety_gate", mock_gate):
+            overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
+            mock_gate.assert_not_called()
+
+        app._executing = False
+        app._cancel_event.set()
+        with unittest.mock.patch("overlay.verify_safety_gate", mock_gate):
+            overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
+            mock_gate.assert_not_called()
+
+        app._cancel_event.clear()
+        app._destroyed = True
+        with unittest.mock.patch("overlay.verify_safety_gate", mock_gate):
+            overlay.KeybindOverlay._execute_bind(app, {"action": "window-close"})
+            mock_gate.assert_not_called()
+
+    def test_g_forbidden_families_blocked(self):
+        """(g) Forbidden families blocked: session-, config-, output-, input-capture-, dpms-."""
+        app = self._make_app()
+        forbidden_actions = [
+            "session-quit",
+            "session-lock",
+            "config-reload",
+            "config-validate",
+            "output-power-off",
+            "input-capture-stop",
+            "dpms-off",
+            "dpms-on",
+        ]
+        for act in forbidden_actions:
+            with self.subTest(action=act):
+                self.assertFalse(overlay.is_executable_action(act))
+                app.status_calls.clear()
+                mock_gate = unittest.mock.MagicMock()
+                with unittest.mock.patch("overlay.verify_safety_gate", mock_gate):
+                    overlay.KeybindOverlay._execute_bind(app, {"action": act})
+                    mock_gate.assert_not_called()
+                    self.assertFalse(app._executing)
+                    self.assertEqual(len(app.status_calls), 1)
+                    self.assertIn("excluded from overlay execution for safety", app.status_calls[0][0])
+
+    def test_h_spawn_passthrough_verbatim(self):
+        """(h) Spawn passthrough verbatim: raw tail preserved without splitting."""
+        app = self._make_app()
+        dispatched_cmds = []
+
+        class SuccessProc:
+            returncode = 0
+            def poll(self):
+                return 0
+            def communicate(self, timeout=None):
+                return ("", "")
+
+        def fake_popen(cmd, *args, **kwargs):
+            dispatched_cmds.append(cmd)
+            return SuccessProc()
+
+        cases = [
+            ("spawn grim -g \"$(slurp)\" shot.png", ["umbriel", "msg", "spawn", "grim -g \"$(slurp)\" shot.png"]),
+            ("spawn printf '%s\\n' \"hello world\" > out.txt", ["umbriel", "msg", "spawn", "printf '%s\\n' \"hello world\" > out.txt"]),
+            ("spawn printf \"%s", ["umbriel", "msg", "spawn", "printf \"%s"]),
+        ]
+        for act, expected in cases:
+            with self.subTest(action=act):
+                dispatched_cmds.clear()
+                with unittest.mock.patch("overlay.verify_safety_gate", return_value=(True, "ok")), \
+                     unittest.mock.patch("subprocess.Popen", side_effect=fake_popen), \
+                     unittest.mock.patch("gi.repository.Gtk.main_quit"):
+                    overlay.KeybindOverlay._execute_bind(app, {"action": act})
+                    app._worker_thread.join(timeout=1.0)
+                    self._drain_idle()
+                    self.assertEqual(dispatched_cmds, [expected])
 
 
 if __name__ == "__main__":
