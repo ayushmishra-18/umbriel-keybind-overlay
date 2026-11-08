@@ -1,42 +1,80 @@
-# Umbriel Keybind Overlay
+# umbriel-keybind-overlay
 
-A searchable keyboard-shortcut overlay for the [Umbriel](https://github.com/noctalia-dev/umbriel) Wayland compositor. It reads your live `config.toml`, displays your active keybindings in a compact launcher-style panel with keycap chords and clean labels, provides real-time text search, tracks compositor submaps over IPC, and lets you trigger bindings directly with `Enter` (high-risk action families are excluded - see Safety Model).
+An unofficial searchable keyboard-shortcut overlay for the [Umbriel](https://github.com/noctalia-dev/umbriel) Wayland compositor.
+
+> **Notice**: This project is independent and unofficial. It is not affiliated with, endorsed by, or maintained by the Umbriel or Noctalia development team.
 
 ![Umbriel Keybind Overlay](screenshot-overlay-default.png)
+
+## Demo
+
+![Umbriel Keybind Overlay Walkthrough](demo/demo.gif)
+*Automated walkthrough showing search filtering, modal submap tracking, and action execution in a nested Umbriel session.*
+
+---
+
+## Features
+
+- **Live Config Parsing**: Reads your live Umbriel `config.toml`, merging nested `include` files and tracking modal submaps over IPC.
+- **Real-Time Text Search**: Real-time plain text matching across key chords, action commands, titles, submaps, and categories (substring matching; not fuzzy search).
+- **Compact Launcher Panel**: Keycap-styled chords, clean action titles, category badges, and an active submap context banner.
+- **Responsive Popup Layout**: Width clamps to monitor boundaries; height dynamically fits row content up to a 320px cap, with smooth scrolling for larger sets.
+- **Mouse & Pointer Support**: Hover over rows to update selection, single-click to trigger actions, with standard arrow and I-beam cursor fallbacks.
+- **Direct Action Execution**: Trigger keybinding actions directly using `Enter` or single-click through a native-session safety gate.
+
+---
+
+## Safety Model
+
+The overlay employs a five-layer defense-in-depth architecture to ensure actions are directed to the correct running Umbriel session:
+
+1. **Process & Config Match**: Identifies the running `umbriel` compositor process matching the target configuration path (supporting both `-c <path>` invocations and default autostart sessions resolving `$XDG_CONFIG_HOME/umbriel/config.toml` from the process's own environment). Execution is refused if zero or multiple instances match.
+2. **Compositor Log Verification**: Reads the running instance's log to confirm identity and extract its active `WAYLAND_DISPLAY`.
+3. **Endpoint & Inode Verification**: Confirms that `WAYLAND_DISPLAY` matches the compositor log and verifies that `UMBRIEL_SOCKET` corresponds to an active socket inode owned by an open file descriptor of that exact compositor PID (`/proc/<pid>/fd/`).
+4. **Forbidden Action Blocklist**: High-risk action families are strictly excluded from overlay execution:
+   - `session-*` (e.g. `session-quit`, logout)
+   - `config-*` (e.g. `config-replace`)
+   - `output-*` (e.g. `output-destroy`, display toggling)
+   - `input-capture-*`
+
+   Rows matching these families display a `not executable` badge; triggering them displays an advisory warning without touching the session.
+5. **Single-Instance Advisory Lock**: Enforces a single instance per Wayland display using an advisory lockfile (`$XDG_RUNTIME_DIR/umbriel-overlay-<display>.lock`) to prevent surface stacking and focus conflicts.
+
+### Honest Limitations
+- **No Command Sandboxing**: The safety gate verifies the association between the overlay, process, and socket endpoint, but it does **not** sandbox commands. When an executable `spawn` row is triggered, `Enter` runs the command as configured. Only use configurations from sources you trust.
+- **Post-Launch `config-replace` Undetectable**: If `umbriel config-replace` is run after compositor startup, the in-memory configuration path change cannot be detected over Umbriel IPC.
 
 ---
 
 ## Installation & Prerequisites
 
-### 1. Prerequisites
+### Prerequisites
 
-- **Compositor**: `umbriel` (developed and tested against commit `c6ad18d`). Compatibility with other compositors or other revisions has not been tested.
-- **Python Runtime**: Python 3.11+ (tested on Python 3.14).
+- **Compositor**: [Umbriel](https://github.com/noctalia-dev/umbriel) (developed and tested against commit `c6ad18d`). Compatibility with other compositors has not been tested.
+- **Python Runtime**: Python 3.11+ (no pip packages; GTK3/PyGObject/gtk-layer-shell system packages required).
 - **System Packages**:
   - **Fedora**: `sudo dnf install python3 python3-gobject gtk3 gtk-layer-shell`
-  - **Debian / Ubuntu**: `sudo apt install python3 python3-gi gir1.2-gtk-3.0 libgtk-layer-shell0`
+  - **Debian / Ubuntu**: `sudo apt install python3 python3-gi gir1.2-gtk-3.0 libgtk-layer-shell0 gir1.2-gtklayershell-0.1`
   - **Arch Linux**: `sudo pacman -S python python-gobject gtk3 gtk-layer-shell`
 - **Optional Tools**:
   - `grim`: For capturing screenshots.
-  - `ffmpeg`: For generating MP4/GIF walkthrough animations with `demo/demo.sh`.
-  - `gcc` + `wayland-client`: For rebuilding the test pointer tool (`make -C tests`).
+  - `ffmpeg`: For generating MP4/GIF walkthrough animations.
+  - `gcc` + `wayland-client`: For rebuilding the virtual-pointer test tool (`make -C tests`).
 
 ---
 
 ## Quickstart: Safe Nested Session (Recommended)
 
-The safest and easiest way to try the overlay is inside an isolated nested Umbriel session. This lets you explore the overlay without altering your active desktop environment.
+The recommended way to test and evaluate the overlay locally is inside an isolated nested Umbriel session:
 
 ### 1. Launch a Nested Umbriel Session
 
-From the project directory, create a temporary scratch directory and start a nested compositor using the provided desktop example configuration:
-
 ```bash
-# Create isolated scratch environment
+# Create an isolated temporary environment
 SCRATCH=$(mktemp -d /tmp/umbriel-trial.XXXXXX)
 mkdir -p "$SCRATCH/config" "$SCRATCH/cache"
 
-# Launch nested compositor with the typical desktop example
+# Start the nested compositor with the typical desktop example
 XDG_CONFIG_HOME="$SCRATCH/config" \
 XDG_CACHE_HOME="$SCRATCH/cache" \
 WLR_BACKENDS=wayland \
@@ -47,10 +85,8 @@ A nested Umbriel window will appear on your desktop.
 
 ### 2. Launch the Overlay Against the Nested Session
 
-Target the nested instance by detecting its Wayland display and socket:
-
 ```bash
-# Wait for the nested compositor to report its display name
+# Resolve the nested session's display name
 DISPLAY_NAME=""
 for i in $(seq 1 50); do
   DISPLAY_NAME=$(grep -h 'running on WAYLAND_DISPLAY=' \
@@ -60,55 +96,51 @@ for i in $(seq 1 50); do
   [ -n "$DISPLAY_NAME" ] && break
   sleep 0.2
 done
+
 if [ -z "$DISPLAY_NAME" ]; then
   echo "Nested compositor did not report a display name; check $SCRATCH/cache/umbriel/" >&2
   exit 1
 fi
 
-# Run the overlay against the nested compositor
+# Close the NESTED session's built-in cheatsheet to prevent overlay occlusion
+# (must point at the nested socket, otherwise it targets the host compositor)
+UMBRIEL_SOCKET="${XDG_RUNTIME_DIR:-/run/user/$UID}/umbriel-$DISPLAY_NAME.sock" \
+umbriel msg cheatsheet-close
+
+# Run the overlay targeting the nested session
 WAYLAND_DISPLAY="$DISPLAY_NAME" \
 UMBRIEL_SOCKET="/run/user/$UID/umbriel-$DISPLAY_NAME.sock" \
 python3 overlay.py -c "$(pwd)/examples/typical-desktop.toml"
 ```
 
-### Overlay Controls
+### Controls
 
-- **Type**: Filters bindings by chord, action name, or category. Search entry automatically maintains typing focus.
+- **Type**: Plain text search across key chords, action commands, titles, and categories.
 - **`↑` / `↓`** (or **`Ctrl+K` / `Ctrl+J`**): Move selection up and down.
 - **Mouse Hover**: Pointer motion over a row moves the selection highlight.
-- **`Enter` or Single-Click**: Trigger the selected/clicked action (executes via `umbriel msg` and closes the overlay).
-- **`Escape`**: Close the overlay immediately without executing anything.
+- **`Enter` or Single-Click**: Execute the selected/clicked action and close the overlay.
+- **`Escape`**: Close the overlay immediately without executing.
 - **`Ctrl+R`**: Reload the configuration from disk.
 
 ---
 
-## Running on Your Real Umbriel Session
+## Running on Your Host Session
 
-You can run the overlay directly in your primary Umbriel session, whether it was launched with an explicit `-c` path or ordinarily launched as a systemd user service or desktop autostart (no `-c` flag):
+To run the overlay in your primary Umbriel desktop session:
 
 ```bash
 python3 overlay.py -c ~/.config/umbriel/config.toml
 ```
 
-If `-c` is omitted, the overlay defaults to `$XDG_CONFIG_HOME/umbriel/config.toml` (or `~/.config/umbriel/config.toml`).
+If `-c` is omitted, the overlay automatically resolves `$XDG_CONFIG_HOME/umbriel/config.toml` (falling back to `~/.config/umbriel/config.toml`).
 
-### Session Safety Gate & Limitations
+### Configuring a Keybinding in Umbriel
 
-The overlay employs a strict five-layer safety gate before executing any action via `Enter` or single-click:
-1. **Verification**: Matches the active `umbriel` process against the overlay's configuration (via command-line arguments or `/proc/<pid>/environ`), verifies the compositor log, and checks that `UMBRIEL_SOCKET` is actively owned by an open file descriptor of that compositor PID.
-2. **Refusal**: Execution is refused if zero matching processes are found, multiple instances match the same config, `/proc` data is unreadable, or the socket inode does not match the compositor.
-3. **Forbidden Families**: Actions in dangerous families (`session-*`, `config-*`, `output-*`, `input-capture-*`) are blocked and display an advisory error banner without executing.
-4. **Honest Limitations**:
-   - **Post-launch `config-replace` is undetectable**: Umbriel's IPC does not expose the in-memory config path.
-   - **Spawn rows run as-is**: The overlay executes configured `spawn` commands directly without sandboxing. Only use configurations you trust.
-
-### Configuring a Launch Shortcut in Umbriel
-
-To bind `Mod+Space` in your Umbriel `config.toml` to open the overlay:
+To launch the overlay via shortcut (for example, `Mod+Space`), add this entry to your `config.toml`:
 
 ```toml
 [keybinds]
-"Mod+Space" = { action = "spawn /path/to/umbriel-overlay/overlay.py" }
+"Mod+Space" = { action = "spawn python3 /path/to/umbriel-overlay/overlay.py" }
 ```
 
 ---
@@ -120,19 +152,19 @@ To bind `Mod+Space` in your Umbriel `config.toml` to open the overlay:
 Run the test suites from the project root:
 
 ```bash
-# Non-graphical unit tests (parsing, actions, chord rendering, width clamping)
+# Non-graphical unit tests (requires system GTK packages installed; does not require a display server)
 python3 -m unittest tests/test_overlay.py
 
-# Native session integration tests (process association, socket ownership)
+# Native session integration tests (process association, socket ownership, live window toggle)
 python3 -m unittest tests/test_native_session.py
 
 # UI refinement tests (sizing extremes, cursor fallback, hover sync)
 python3 -m unittest tests/test_ui_refinement.py
 ```
 
-### Rebuilding the Virtual Pointer Tool
+### Virtual Pointer Helper
 
-The test suite uses an in-repo virtual pointer tool (`tests/wlr_ptr`) based on the `zwlr_virtual_pointer_v1` Wayland protocol to simulate precise mouse motion and clicks. To rebuild it:
+The integration test suite utilizes an in-repo virtual pointer helper (`tests/wlr_ptr`) implementing the `zwlr_virtual_pointer_v1` protocol to generate mouse input. To rebuild it:
 
 ```bash
 make -C tests
@@ -140,34 +172,17 @@ make -C tests
 
 ---
 
-## Safety Model
-
-The overlay employs a five-layer defense-in-depth architecture to reduce the risk of actions misfiring against the wrong compositor session. Two things it does not do: it does not make `spawn` rows safe - `Enter` runs the configured command as-is, so only use it with configs you trust - and it does not detect in-memory configuration changes if `umbriel config-replace` was run post-launch:
-
-1. **Process & Config Match**: Discovers running `umbriel` processes and matches the overlay's canonical configuration path against the compositor's configuration. Supports both `-c <path>` invocations and default autostart sessions (resolving `$XDG_CONFIG_HOME/umbriel/config.toml` or `~/.config/umbriel/config.toml` directly from `/proc/<pid>/environ`). Ambiguity (zero or multiple matches) refuses execution.
-2. **Compositor Log Verification**: Reads the running instance's log (`umbriel-stderr.log` / `umbriel.log` located via `XDG_CACHE_HOME` or process file descriptors) to confirm instance identity and extract its active `WAYLAND_DISPLAY`.
-3. **Canonical Endpoint & Inode Ownership Verification**: Confirms that the caller's `WAYLAND_DISPLAY` matches the compositor log and that `UMBRIEL_SOCKET` canonical path matches `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock`. Furthermore, maps the socket path to its inode in `/proc/net/unix` and verifies that the matched compositor process holds an open file descriptor referencing that socket inode under `/proc/<pid>/fd/`. Sockets belonging to other processes or directories are rejected.
-4. **Forbidden Action Blocklist**: Actions belonging to high-risk families are blocked from execution:
-   - `session-*` (e.g. `session-quit`, logout)
-   - `config-*` (e.g. `config-replace`)
-   - `output-*` (e.g. `output-destroy`)
-   - `input-capture-*`
-   These rows display a red `not executable` danger badge in the UI. Pressing `Enter` on them refuses execution and shows a safety warning in the footer without affecting your session.
-5. **Single-Instance Enforcement**: An advisory lockfile (`$XDG_RUNTIME_DIR/umbriel-overlay-<display>.lock`, e.g. `umbriel-overlay-wayland-0.lock`) enforces a single instance per Wayland display, preventing multiple overlay instances from stacking surfaces or conflicting on exclusive keyboard grab.
-
----
-
 ## Example Configurations
 
-The `examples/` directory contains realistic configurations validated against Umbriel's native validator (`umbriel config validate -c <file> --json`):
+The `examples/` directory contains realistic configurations validated against Umbriel's native syntax:
 
-- **`examples/minimal.toml`** (5 bindings): A minimal setup covering core window closing, terminal spawning, and basic navigation.
-- **`examples/typical-desktop.toml`** (44 bindings, 1 submap): A complete daily driver setup with application launchers, vim-style navigation, full 1–9 workspace management, media keys, and a screencapture submap.
-- **`examples/power-user.toml`** (58 bindings, 3 submaps): An advanced configuration featuring three distinct submaps (`screencapture`, `window_mgmt`, and `system`), custom window splits, and layout controls.
+- **[`examples/minimal.toml`](examples/minimal.toml)** (5 bindings): Core navigation and terminal launching.
+- **[`examples/typical-desktop.toml`](examples/typical-desktop.toml)** (44 bindings, 1 submap): Complete daily driver layout with workspaces 1–9, media keys, and a screencapture submap.
+- **[`examples/power-user.toml`](examples/power-user.toml)** (58 bindings, 3 submaps): Advanced modal workflow with `screencapture`, `window_mgmt`, and `system` submaps.
 
 ---
 
-## Automated Demo & Verification
+## Automated Walkthrough Demo
 
 A self-contained automated demonstration script is available in `demo/`:
 
@@ -176,26 +191,17 @@ cd demo
 ./demo.sh
 ```
 
-The script:
-1. Launches an isolated nested session with `examples/typical-desktop.toml`.
-2. Steps through the overlay UI (default view, search filtering, submap context banner).
-3. Spawns an installed terminal emulator (`alacritty`), executes `window-toggle-maximize` from the overlay, and records before-and-after compositor window geometry in `windows-before-maximize.json` and `windows-after-maximize.json`.
-4. Produces labeled screenshot artifacts and compiles an animated `demo.mp4` / `demo.gif` walkthrough (if `ffmpeg` is installed).
-5. Cleanly terminates the nested session with zero lingering background processes.
-
-See [`demo/DEMO.md`](demo/DEMO.md) for a narrated 2-minute walkthrough with screenshots and JSON deltas.
+This script launches an isolated nested session, exercises search and submap features, toggles window states on an active terminal window, and logs window geometry before and after execution. See [`demo/DEMO.md`](demo/DEMO.md) for a narrated walkthrough with screenshots and JSON deltas.
 
 ---
 
-## Known Limitations & Development Status
+## License & Credits
 
-- **Development Status**: This tool is an early-stage prototype developed and verified entirely in local isolated nested sessions.
-- **Submap Inheritance**: Umbriel treats submaps as strict modal groups rather than hierarchical inheritance trees. The overlay reflects this behavior directly.
-- **Layer-Shell Surface**: Requires Wayland compositor support for `zwlr_layer_shell_v1` (supported natively by Umbriel via wlroots).
-- **Execution Limitation**: As described in the safety model, action triggering requires a running Umbriel instance whose configuration deterministically associates with the overlay's config (either via `-c <path>` or native `$XDG_CONFIG_HOME/umbriel/config.toml`). Post-launch in-memory config switches via `umbriel config-replace` cannot be detected.
+- **License**: Released under the [MIT License](LICENSE) (Copyright 2026 Ayush Mishra).
+- **Third-Party Acknowledgments**: See [NOTICE](NOTICE) for third-party acknowledgments, including Umbriel/Noctalia configuration merge semantics and Josef Gajdusek's `wlr-virtual-pointer` protocol files.
 
 ---
 
-## Third-Party Credits
+## Contributing
 
-- **`umbriel_keys.py`**: Config parsing and table-merge logic (a stdlib-only Python parser reproducing Umbriel's upstream C++ `config_merge.cpp` semantics).
+Contributions, bug reports, and suggestions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting pull requests; all submissions are reviewed by the maintainer.
