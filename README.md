@@ -36,6 +36,7 @@ The overlay employs a five-layer defense-in-depth architecture to ensure actions
    - `config-*` (e.g. `config-replace`)
    - `output-*` (e.g. `output-destroy`, display toggling)
    - `input-capture-*`
+   - `dpms-*` (e.g. `dpms-off`, `dpms-on`)
 
    Rows matching these families display a `not executable` badge; triggering them displays an advisory warning without touching the session.
 5. **Single-Instance Advisory Lock**: Enforces a single instance per Wayland display using an advisory lockfile (`$XDG_RUNTIME_DIR/umbriel-overlay-<display>.lock`) to prevent surface stacking and focus conflicts.
@@ -43,6 +44,8 @@ The overlay employs a five-layer defense-in-depth architecture to ensure actions
 ### Honest Limitations
 - **No Command Sandboxing**: The safety gate verifies the association between the overlay, process, and socket endpoint, but it does **not** sandbox commands. When an executable `spawn` row is triggered, `Enter` runs the command as configured. Only use configurations from sources you trust.
 - **Post-Launch `config-replace` Undetectable**: If `umbriel config-replace` is run after compositor startup, the in-memory configuration path change cannot be detected over Umbriel IPC.
+- **Cancellation & Process Independence**: Closing the overlay popup (via `Escape` or window destruction) before a pending command is sent cancels execution. However, once a command has been accepted by the compositor or an external process has spawned (such as a terminal), the overlay does not undo the action or kill the spawned application. There is also a small, inherent race window between the final cancellation check and process dispatch.
+- **Isolated Launcher Test Harness**: The automated launcher test suite (`tests/test_run_nested.py`) uses fake processes and mock sockets to test script behavior, signal handling, and cleanups in headless environments; it does not exercise a real GPU-backed compositor instance.
 
 ---
 
