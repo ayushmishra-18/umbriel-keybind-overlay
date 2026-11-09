@@ -91,6 +91,37 @@ def format_action_title(action: str, default_label: str = "") -> str:
     return label
 
 
+def resolve_compositor_config(config_arg: str, proc_cwd: str | None = None) -> str | None:
+    """Resolves an explicit -c config argument from a compositor's command line.
+
+    If config_arg is absolute, resolves symlinks via os.path.realpath without
+    reading or requiring proc_cwd.
+    If config_arg is relative, resolves it against the compositor process's working
+    directory (proc_cwd). If proc_cwd is missing, empty, or not an absolute path,
+    resolution fails and returns None.
+
+    Note on cwd staleness: Resolution uses the compositor's current working directory
+    at check time (/proc/<pid>/cwd), which may differ from its launch-time directory
+    if the compositor process or a wrapper changed directory after spawn. Upstream
+    Umbriel source inspection (commit c6ad18d) shows it does not call chdir/current_path;
+    nevertheless, resolving a relative -c path against /proc/<pid>/cwd is on a best-effort
+    basis and does not guarantee recovering the exact launch-time directory.
+    """
+    if not config_arg or not isinstance(config_arg, str) or not config_arg.strip():
+        return None
+
+    if os.path.isabs(config_arg):
+        return os.path.realpath(config_arg)
+
+    if not proc_cwd or not isinstance(proc_cwd, str) or not proc_cwd.strip():
+        return None
+
+    if not os.path.isabs(proc_cwd):
+        return None
+
+    return os.path.realpath(os.path.join(proc_cwd, config_arg))
+
+
 def verify_safety_gate(config_path: str, scratch_config: str = None, scratch_cache: str = None) -> tuple[bool, str]:
     """Verifies that:
     1. A single unambiguous compositor process is running that matches the target config,
@@ -163,7 +194,18 @@ def verify_safety_gate(config_path: str, scratch_config: str = None, scratch_cac
             i += 1
 
         if cmdline_config is not None:
-            proc_config = os.path.realpath(cmdline_config)
+            if os.path.isabs(cmdline_config):
+                proc_config = resolve_compositor_config(cmdline_config)
+            else:
+                proc_cwd = None
+                try:
+                    proc_cwd = os.readlink(f"/proc/{pid}/cwd")
+                except Exception:
+                    proc_cwd = None
+                proc_config = resolve_compositor_config(cmdline_config, proc_cwd)
+
+            if proc_config is None:
+                continue
         else:
             # Deterministic default launch resolution from process's own environment
             proc_env = {}
