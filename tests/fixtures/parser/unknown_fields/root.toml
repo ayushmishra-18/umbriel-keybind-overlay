@@ -1,0 +1,3 @@
+# Table-form binding with unrecognized fields
+[keybinds]
+"Mod+U" = { action = "window-focus next", custom_vendor_flag = "experimental", priority_tier = 42 }
