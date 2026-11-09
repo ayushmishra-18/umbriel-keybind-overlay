@@ -37,6 +37,9 @@ python3 tests/test_ui_refinement.py
 # Native session gate tests (spins up an isolated nested compositor)
 python3 tests/test_native_session.py
 
+# Live session tests (expects an already-running nested Umbriel session; skips cleanly otherwise)
+python3 tests/test_live_session.py
+
 # Rebuild the virtual-pointer helper if you touch pointer code
 make -C tests
 ```
