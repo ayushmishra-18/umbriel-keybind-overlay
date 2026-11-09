@@ -1,0 +1,6 @@
+# Root config with present and missing optional includes
+[include.optional]
+files = ["present.toml", "absent_optional.toml"]
+
+[keybinds]
+"Mod+O" = "spawn root"
