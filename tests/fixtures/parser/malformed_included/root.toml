@@ -1,0 +1,6 @@
+# Root config referencing a malformed include
+[include]
+files = ["bad_syntax.toml"]
+
+[keybinds]
+"Mod+X" = "window-close"
