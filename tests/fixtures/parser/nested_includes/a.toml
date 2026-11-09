@@ -1,0 +1,6 @@
+# Intermediate include
+[include]
+files = ["b.toml"]
+
+[keybinds]
+"Mod+A" = "spawn terminal-a"
