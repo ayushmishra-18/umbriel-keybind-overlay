@@ -1,0 +1,6 @@
+# Deeply nested include
+[general]
+mod_key = "super"
+
+[keybinds]
+"Mod+B" = "spawn terminal-b"
