@@ -1,0 +1,3 @@
+# Malformed TOML syntax
+[keybinds
+invalid_syntax === ???
