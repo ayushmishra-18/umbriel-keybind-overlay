@@ -1,0 +1,6 @@
+# Submap configuration
+[keybinds]
+"Mod+S" = { action = "submap screencapture", repeat = false }
+"submap[screencapture],1" = { action = "spawn grim screenshot.png", submap = "reset" }
+"submap[screencapture],Escape" = "submap reset"
+"Mod+Return" = "spawn alacritty"
