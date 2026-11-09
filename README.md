@@ -228,11 +228,14 @@ python3 -m unittest tests/test_ui_refinement.py
 # Launcher behavior tests (fake compositor/overlay processes; headless, no Wayland needed)
 python3 -m unittest tests/test_run_nested.py
 
+# Parser fixture tests (compatibility baseline fixtures; headless)
+python3 -m unittest tests/test_parser_fixtures.py
+
 # Live session tests (expects an already-running nested Umbriel session; skips cleanly otherwise)
 python3 -m unittest tests/test_live_session.py
 ```
 
-Coverage at a glance (counts grow over time): 87 test methods across 5 suites. CI runs the 72 headless tests (test_overlay, test_run_nested) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
+Coverage at a glance (counts grow over time): 95 test methods across 6 suites. CI runs the 80 headless tests (test_overlay, test_run_nested, test_parser_fixtures) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
 
 ### Virtual Pointer Helper
 
