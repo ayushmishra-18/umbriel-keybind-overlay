@@ -1333,17 +1333,76 @@ class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
         display="wayland-1",
         overlay_cwd=None,
         readlink_calls=None,
+        pids=None,
+        comm_map=None,
+        cmdline_map=None,
+        proc_cwd_map=None,
+        proc_cwd_error_map=None,
+        proc_environ=b"",
+        proc_environ_map=None,
+        open_errors=None,
+        readlink_errors=None,
+        log_content=None,
+        log_exists=True,
+        scratch_cache="/mock/cache",
+        socket_exists=True,
+        net_unix_content=None,
+        net_unix_has_socket=True,
+        socket_inode="987654",
+        fd_dir_is_dir=True,
+        fd_listdir_error=None,
+        fd_entries=None,
+        fd_targets=None,
+        env_wayland_display=None,
+        env_umbriel_socket=None,
+        env_xdg_runtime_dir=None,
+        extra_env=None,
     ):
+        if pids is None:
+            pids = [pid]
         if cmdline_args is None:
             cmdline_args = ["umbriel", "-c", "conf/config.toml"]
         if readlink_calls is None:
             readlink_calls = []
+        if fd_entries is None:
+            fd_entries = ["3"]
+
+        if comm_map is None:
+            comm_map = {p: comm for p in pids}
+        if cmdline_map is None:
+            cmdline_map = {p: cmdline_args for p in pids}
+        if proc_cwd_map is None:
+            proc_cwd_map = {p: proc_cwd for p in pids}
+        if proc_cwd_error_map is None:
+            proc_cwd_error_map = {p: proc_cwd_error for p in pids}
+        if proc_environ_map is None:
+            proc_environ_map = {p: proc_environ for p in pids}
+
+        cmdline_bytes_map = {
+            p: b"\x00".join(a.encode("utf-8") for a in cmdline_map.get(p, [])) + b"\x00"
+            for p in pids
+        }
 
         sock_path = f"/mock/run/user/1000/umbriel-{display}.sock"
-        scratch_cache = "/mock/cache"
-        log_path = f"{scratch_cache}/umbriel/umbriel.log"
-        cmdline_bytes = b"\x00".join(a.encode("utf-8") for a in cmdline_args) + b"\x00"
-        net_unix = f"Num RefCount Protocol Flags Type St Inode Path\n00000000: 00000002 00000000 00010000 0001 01 987654 {sock_path}\n"
+        if scratch_cache is not None:
+            log_path = f"{scratch_cache}/umbriel/umbriel.log"
+        else:
+            log_path = None
+
+        if log_content is not None:
+            effective_log_content = log_content
+        else:
+            effective_log_content = f"running on WAYLAND_DISPLAY={display}\n"
+
+        if net_unix_content is not None:
+            net_unix = net_unix_content
+        elif not net_unix_has_socket:
+            net_unix = "Num RefCount Protocol Flags Type St Inode Path\n"
+        else:
+            net_unix = (
+                f"Num RefCount Protocol Flags Type St Inode Path\n"
+                f"00000000: 00000002 00000000 00010000 0001 01 {socket_inode} {sock_path}\n"
+            )
 
         orig_open = open
         orig_exists = os.path.exists
@@ -1352,52 +1411,83 @@ class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
         orig_readlink = os.readlink
 
         def fake_open(path, *args, **kwargs):
-            if path == f"/proc/{pid}/cmdline":
-                return io.BytesIO(cmdline_bytes)
-            if path == f"/proc/{pid}/comm":
-                return io.StringIO(f"{comm}\n")
-            if path == f"/proc/{pid}/environ":
-                return io.BytesIO(b"")
-            if path == log_path:
-                return io.StringIO(f"running on WAYLAND_DISPLAY={display}\n")
+            if open_errors and path in open_errors:
+                err = open_errors[path]
+                if isinstance(err, Exception):
+                    raise err
+                raise OSError(str(err))
+
+            for p in pids:
+                if path == f"/proc/{p}/cmdline":
+                    return io.BytesIO(cmdline_bytes_map.get(p, b""))
+                if path == f"/proc/{p}/comm":
+                    return io.StringIO(f"{comm_map.get(p, comm)}\n")
+                if path == f"/proc/{p}/environ":
+                    return io.BytesIO(proc_environ_map.get(p, b""))
+
+            if log_path and path == log_path:
+                return io.StringIO(effective_log_content)
             if path == "/proc/net/unix":
                 return io.StringIO(net_unix)
             return orig_open(path, *args, **kwargs)
 
         def fake_exists(path):
-            if path in (target_config, sock_path, log_path, f"/proc/{pid}/comm", f"/proc/{pid}/cmdline"):
+            if path == target_config:
                 return True
-            if path in (f"/proc/{pid}/fd/1", f"/proc/{pid}/fd/2"):
-                return False
+            if path == sock_path:
+                return socket_exists
+            if log_path and path == log_path:
+                return log_exists
+            for p in pids:
+                if path in (f"/proc/{p}/comm", f"/proc/{p}/cmdline"):
+                    return True
+                if path in (f"/proc/{p}/fd/1", f"/proc/{p}/fd/2"):
+                    return False
             return orig_exists(path)
 
         def fake_isdir(path):
-            if path == f"/proc/{pid}/fd":
-                return True
+            for p in pids:
+                if path == f"/proc/{p}/fd":
+                    return fd_dir_is_dir
             return orig_isdir(path)
 
         def fake_listdir(path):
-            if path == f"/proc/{pid}/fd":
-                return ["3"]
+            for p in pids:
+                if path == f"/proc/{p}/fd":
+                    if fd_listdir_error:
+                        raise fd_listdir_error
+                    return list(fd_entries)
             return orig_listdir(path)
 
         def fake_readlink(path):
             readlink_calls.append(path)
-            if path == f"/proc/{pid}/cwd":
-                if proc_cwd_error:
-                    raise proc_cwd_error
-                return proc_cwd
-            if path == f"/proc/{pid}/fd/3":
-                return "socket:[987654]"
+            if readlink_errors and path in readlink_errors:
+                raise readlink_errors[path]
+            for p in pids:
+                if path == f"/proc/{p}/cwd":
+                    err = proc_cwd_error_map.get(p)
+                    if err:
+                        raise err
+                    return proc_cwd_map.get(p)
+                if fd_targets and path in fd_targets:
+                    return fd_targets[path]
+                if path == f"/proc/{p}/fd/3":
+                    return f"socket:[{socket_inode}]"
             return orig_readlink(path)
 
-        fake_proc = subprocess.CompletedProcess(args=["pgrep"], returncode=0, stdout=f"{pid}\n")
+        fake_proc = subprocess.CompletedProcess(
+            args=["pgrep"],
+            returncode=0,
+            stdout="".join(f"{p}\n" for p in pids),
+        )
 
         env_overrides = {
-            "WAYLAND_DISPLAY": display,
-            "XDG_RUNTIME_DIR": "/mock/run/user/1000",
-            "UMBRIEL_SOCKET": sock_path,
+            "WAYLAND_DISPLAY": env_wayland_display if env_wayland_display is not None else display,
+            "XDG_RUNTIME_DIR": env_xdg_runtime_dir if env_xdg_runtime_dir is not None else "/mock/run/user/1000",
+            "UMBRIEL_SOCKET": env_umbriel_socket if env_umbriel_socket is not None else sock_path,
         }
+        if extra_env:
+            env_overrides.update(extra_env)
 
         stack = contextlib.ExitStack()
         stack.enter_context(unittest.mock.patch("subprocess.run", return_value=fake_proc))
@@ -1411,7 +1501,7 @@ class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
             stack.enter_context(unittest.mock.patch("os.getcwd", return_value=overlay_cwd))
 
         with stack:
-            yield GateEnv(scratch_cache, readlink_calls)
+            yield GateEnv(scratch_cache if scratch_cache is not None else "", readlink_calls)
 
     def test_gate_relative_config_different_cwds_refuses(self):
         """(1) Relative -c with different working directories:
@@ -1523,6 +1613,234 @@ class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
             safe, msg = overlay.verify_safety_gate(target_config, scratch_cache=sc)
             self.assertTrue(safe, f"Expected gate to verify successfully, got: {msg}")
             self.assertIn("Verified instance PID 5555 on wayland-1", msg)
+
+
+class TestSafetyGateRefusals(unittest.TestCase):
+    """Headless regression tests for verify_safety_gate refusal branches.
+
+    Covers all branches where verify_safety_gate must fail closed:
+    - Multiple matching candidate instances (ambiguity)
+    - WAYLAND_DISPLAY mismatch between environment and compositor log
+    - Unreadable /proc/<pid>/cmdline
+    - Unreadable /proc/<pid>/environ (at default launch and log discovery call sites)
+    - Default launch missing both XDG_CONFIG_HOME and HOME
+    - Compositor log not found at any candidate location
+    - Compositor log missing WAYLAND_DISPLAY line
+    - Expected socket path absent on disk
+    - Socket endpoint absent from /proc/net/unix
+    - /proc/<pid>/fd directory inaccessible or unreadable
+    - UMBRIEL_SOCKET path mismatch
+    - Socket inode not owned by matched compositor process
+    """
+
+    _mock_gate_env = TestSafetyGateRelativeConfigResolution._mock_gate_env
+
+    def test_refuse_ambiguous_matching_compositor_instances(self):
+        """(1) Ambiguity: two running compositor processes both match the target config."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 5556],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                5556: ["umbriel", "-c", tc],
+            },
+            target_config=tc,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when multiple instances match target config")
+            self.assertIn("Safety gate: ambiguous matching compositor instances found", msg)
+
+    def test_refuse_wayland_display_mismatch(self):
+        """(2) WAYLAND_DISPLAY mismatch: overlay env display differs from compositor log display."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            display="wayland-1",
+            env_wayland_display="wayland-2",
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when WAYLAND_DISPLAY does not match log")
+            self.assertIn("Safety gate: WAYLAND_DISPLAY mismatch", msg)
+
+    def test_refuse_unreadable_proc_cmdline(self):
+        """(3) Unreadable /proc/<pid>/cmdline: open raises -> refuse fail-closed."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            open_errors={f"/proc/{pid}/cmdline": PermissionError("Permission denied")},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when /proc/<pid>/cmdline is unreadable")
+            self.assertIn(f"Safety gate: unreadable /proc/{pid}/cmdline", msg)
+
+    def test_refuse_unreadable_proc_environ_default_launch(self):
+        """(4a) Unreadable /proc/<pid>/environ: default launch config resolution fails closed."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=tc,
+            open_errors={f"/proc/{pid}/environ": PermissionError("Permission denied")},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when /proc/<pid>/environ is unreadable during config match")
+            self.assertIn(f"Safety gate: unreadable /proc/{pid}/environ", msg)
+
+    def test_refuse_unreadable_proc_environ_log_discovery(self):
+        """(4b) Unreadable /proc/<pid>/environ: log discovery fails closed when scratch_cache is absent."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            scratch_cache=None,
+            open_errors={f"/proc/{pid}/environ": PermissionError("Permission denied")},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=None)
+            self.assertFalse(safe, "Gate must refuse when /proc/<pid>/environ is unreadable during log discovery")
+            self.assertIn(f"Safety gate: unreadable /proc/{pid}/environ", msg)
+
+    def test_refuse_default_launch_missing_xdg_and_home(self):
+        """(5) Default launch with neither XDG_CONFIG_HOME nor HOME set in compositor environ."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=tc,
+            proc_environ=b"USER=citomba\x00SHELL=/bin/bash\x00",
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when neither XDG_CONFIG_HOME nor HOME is set")
+            self.assertIn(f"Safety gate: cannot determine config for PID {pid}", msg)
+
+    def test_refuse_compositor_log_not_found(self):
+        """(6) Compositor log not found at any candidate location."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            scratch_cache=None,
+            log_exists=False,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=None)
+            self.assertFalse(safe, "Gate must refuse when compositor log is not found")
+            self.assertIn(f"Safety gate: compositor log not found for PID {pid}", msg)
+
+    def test_refuse_compositor_log_missing_display(self):
+        """(7) Compositor log exists but contains no 'running on WAYLAND_DISPLAY=' line."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            log_content="[info] compositor initialized\n[info] loading config\n",
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when compositor log lacks display line")
+            self.assertIn(f"Safety gate: could not extract WAYLAND_DISPLAY from compositor log for PID {pid}", msg)
+
+    def test_refuse_expected_socket_does_not_exist(self):
+        """(8) Expected socket path does not exist on disk."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            socket_exists=False,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when expected socket does not exist on disk")
+            self.assertIn("Safety gate: expected socket", msg)
+            self.assertIn("does not exist", msg)
+
+    def test_refuse_socket_not_found_in_proc_net_unix(self):
+        """(9) Socket path absent from /proc/net/unix."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            net_unix_has_socket=False,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when socket is not found in /proc/net/unix")
+            self.assertIn("not found in /proc/net/unix", msg)
+
+    def test_refuse_fd_dir_inaccessible(self):
+        """(10a) /proc/<pid>/fd directory inaccessible (not a directory)."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            fd_dir_is_dir=False,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when /proc/<pid>/fd cannot be accessed")
+            self.assertIn(f"Safety gate: cannot access /proc/{pid}/fd", msg)
+
+    def test_refuse_fd_dir_unreadable(self):
+        """(10b) /proc/<pid>/fd directory unreadable (listdir raises error)."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            fd_listdir_error=PermissionError("Permission denied reading fd directory"),
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when /proc/<pid>/fd cannot be listed")
+            self.assertIn(f"Safety gate: unreadable /proc/{pid}/fd", msg)
+
+    def test_refuse_umbriel_socket_path_mismatch(self):
+        """(11) UMBRIEL_SOCKET path mismatch: env socket differs from expected canonical socket."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            env_umbriel_socket="/mock/run/user/1000/umbriel-different.sock",
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when UMBRIEL_SOCKET does not match expected socket")
+            self.assertIn("Safety gate: UMBRIEL_SOCKET path mismatch", msg)
+
+    def test_refuse_socket_not_owned_by_compositor_pid(self):
+        """(12) Socket inode ownership: socket exists in /proc/net/unix but no fd of matched PID owns inode."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            fd_targets={f"/proc/{pid}/fd/3": "socket:[111111]"},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when socket inode is not owned by compositor PID")
+            self.assertIn(f"is not owned by compositor PID {pid}", msg)
+
+    def test_refuse_unreadable_proc_net_unix(self):
+        """Unreadable /proc/net/unix: open raises -> refuse fail-closed."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            open_errors={"/proc/net/unix": PermissionError("Permission denied")},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when /proc/net/unix is unreadable")
+            self.assertIn("Safety gate: unreadable /proc/net/unix", msg)
 
 
 if __name__ == "__main__":
