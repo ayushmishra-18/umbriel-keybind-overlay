@@ -28,7 +28,7 @@ An unofficial searchable keyboard-shortcut overlay for the [Umbriel](https://git
 
 The overlay employs a five-layer defense-in-depth architecture to ensure actions are directed to the correct running Umbriel session:
 
-1. **Process & Config Match**: Identifies the running `umbriel` compositor process matching the target configuration path (supporting both `-c <path>` invocations and default autostart sessions resolving `$XDG_CONFIG_HOME/umbriel/config.toml` from the process's own environment). Execution is refused if zero or multiple instances match.
+1. **Process & Config Match**: Identifies the running `umbriel` compositor process matching the target configuration path (supporting both `-c <path>` invocations and default autostart sessions resolving `$XDG_CONFIG_HOME/umbriel/config.toml` from the process's own environment). Execution is refused if zero or multiple instances match. A relative `-c` path is resolved against the compositor's own working directory (`/proc/<pid>/cwd`), not the overlay's; if that directory cannot be established, the candidate is treated as not matching, and the gate refuses unless one unambiguous matching candidate remains. Resolution uses the compositor's current working directory at check time, which can differ from its launch-time directory, so it is best-effort.
 2. **Compositor Log Verification**: Reads the running instance's log to confirm identity and extract its active `WAYLAND_DISPLAY`.
 3. **Endpoint & Inode Verification**: Confirms that `WAYLAND_DISPLAY` matches the compositor log and verifies that `UMBRIEL_SOCKET` corresponds to an active socket inode owned by an open file descriptor of that exact compositor PID (`/proc/<pid>/fd/`).
 4. **Forbidden Action Blocklist**: High-risk action families are strictly excluded from overlay execution:
@@ -38,14 +38,18 @@ The overlay employs a five-layer defense-in-depth architecture to ensure actions
    - `input-capture-*`
    - `dpms-*` (e.g. `dpms-off`, `dpms-on`)
 
-   Rows matching these families display a `not executable` badge; triggering them displays an advisory warning without touching the session.
+   Rows matching these families display a `not executable` badge; triggering them displays an advisory warning without touching the session. The blocklist checks only the first word of the configured action: a bare `dpms-off` binding is blocked, while `spawn dpms-off` is not, because its first word is `spawn`. Commands inside `spawn` are never inspected; see No Command Sandboxing below.
 5. **Single-Instance Advisory Lock**: Enforces a single instance per Wayland display using an advisory lockfile (`$XDG_RUNTIME_DIR/umbriel-overlay-<display>.lock`) to prevent surface stacking and focus conflicts.
+
+These layers are not equivalent guarantees. Layers 1-3 verify which running Umbriel session the overlay is associated with. Layer 4 restricts which action types may be executed, independently of session identity. Layer 5 only prevents duplicate overlay windows on the same display; it is not an identity check or a security boundary.
 
 ### Honest Limitations
 - **No Command Sandboxing**: The safety gate verifies the association between the overlay, process, and socket endpoint, but it does **not** sandbox commands. When an executable `spawn` row is triggered, `Enter` runs the command as configured. Only use configurations from sources you trust.
 - **Post-Launch `config-replace` Undetectable**: If `umbriel config-replace` is run after compositor startup, the in-memory configuration path change cannot be detected over Umbriel IPC.
 - **Cancellation & Process Independence**: Closing the overlay popup (via `Escape` or window destruction) before a pending command is sent cancels execution. However, once a command has been accepted by the compositor or an external process has spawned (such as a terminal), the overlay does not undo the action or kill the spawned application. There is also a small, inherent race window between the final cancellation check and process dispatch.
 - **Isolated Launcher Test Harness**: The automated launcher test suite (`tests/test_run_nested.py`) uses fake processes and mock sockets to test script behavior, signal handling, and cleanups in headless environments; it does not exercise a real GPU-backed compositor instance.
+- **Advisory Lock Scope**: The single-instance lockfile only coordinates between overlay windows on the same display. It does not verify the identity of the compositor or of other processes and provides no protection against a process that ignores the lock.
+- **Relative XDG_CONFIG_HOME or HOME Values**: In the default-launch path, a non-absolute XDG_CONFIG_HOME or HOME in the compositor's environment would be resolved against the overlay's working directory. The XDG Base Directory specification requires XDG_CONFIG_HOME to be absolute and treats relative values as invalid; HOME is outside that specification but is absolute on any normal system, so this affects only non-conforming configurations.
 
 ---
 
@@ -223,7 +227,12 @@ python3 -m unittest tests/test_ui_refinement.py
 
 # Launcher behavior tests (fake compositor/overlay processes; headless, no Wayland needed)
 python3 -m unittest tests/test_run_nested.py
+
+# Live session tests (expects an already-running nested Umbriel session; skips cleanly otherwise)
+python3 -m unittest tests/test_live_session.py
 ```
+
+Coverage at a glance (counts grow over time): 87 test methods across 5 suites. CI runs the 72 headless tests (test_overlay, test_run_nested) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
 
 ### Virtual Pointer Helper
 
