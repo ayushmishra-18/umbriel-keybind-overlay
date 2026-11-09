@@ -1,0 +1,4 @@
+# Base bindings to be overridden
+[keybinds]
+"Mod+S" = { action = "spawn old-script", repeat = true, cooldown_ms = 250 }
+"Mod+T" = { action = "window-toggle-fullscreen", repeat = false, allow_when_locked = true }
