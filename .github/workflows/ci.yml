@@ -24,7 +24,9 @@ jobs:
 
       - name: Check shell script syntax
         run: |
-          bash -n scripts/run-nested.sh
+          for s in scripts/run-nested.sh scripts/install.sh scripts/uninstall.sh; do
+            bash -n "$s"
+          done
 
       - name: Byte-compile Python sources
         run: |
@@ -37,4 +39,4 @@ jobs:
       # already-running nested session with its scratch config).
       - name: Run headless unit test suites
         run: |
-          python3 -m unittest -v tests.test_overlay tests.test_run_nested tests.test_parser_fixtures
+          python3 -m unittest -v tests.test_overlay tests.test_run_nested tests.test_parser_fixtures tests.test_installer
