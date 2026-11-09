@@ -30,6 +30,7 @@ Run the headless suites from the project root. CI runs these on every push:
     python3 -m unittest tests/test_overlay.py
     python3 -m unittest tests/test_run_nested.py
     python3 -m unittest tests/test_parser_fixtures.py
+    python3 -m unittest tests/test_installer.py
 
 The remaining suites require a graphical Wayland session and the `umbriel`
 executable: `test_native_session` and `test_ui_refinement` start their own
