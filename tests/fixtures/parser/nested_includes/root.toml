@@ -1,0 +1,9 @@
+# Root config
+[general]
+mod_key = "alt"
+
+[include]
+files = ["a.toml"]
+
+[keybinds]
+"Mod+R" = "spawn terminal-root"
