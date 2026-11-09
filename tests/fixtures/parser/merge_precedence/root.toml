@@ -1,0 +1,10 @@
+# Root config demonstrating merge precedence
+[include]
+files = ["base.toml"]
+
+[keybinds]
+# Scalar bind replacing table-form bind wholesale
+"Mod+S" = "spawn new-script"
+
+# Table-form bind merging field-by-field with base.toml definition
+"Mod+T" = { action = "window-toggle-maximize", repeat = true }
