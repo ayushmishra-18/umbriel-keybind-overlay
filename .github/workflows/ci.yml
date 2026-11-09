@@ -37,4 +37,4 @@ jobs:
       # already-running nested session with its scratch config).
       - name: Run headless unit test suites
         run: |
-          python3 -m unittest -v tests.test_overlay tests.test_run_nested
+          python3 -m unittest -v tests.test_overlay tests.test_run_nested tests.test_parser_fixtures
