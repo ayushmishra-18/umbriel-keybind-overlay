@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for the Umbriel Keybind Overlay."""
 
+import contextlib
+import io
 import os
 import shlex
 import subprocess
@@ -27,6 +29,7 @@ from overlay import (
     format_action_title,
     FORBIDDEN_FAMILIES,
     compute_target_width,
+    resolve_compositor_config,
 )
 
 
@@ -1263,6 +1266,263 @@ class TestCancelBeforeDispatch(unittest.TestCase):
                     app._worker_thread.join(timeout=1.0)
                     self._drain_idle()
                     self.assertEqual(dispatched_cmds, [expected])
+
+
+class GateEnv(str):
+    """Context object returned by _mock_gate_env.
+    Subclasses str so it can be passed directly as scratch_cache, while also exposing readlink_calls.
+    """
+    def __new__(cls, scratch_cache, readlink_calls):
+        obj = super().__new__(cls, scratch_cache)
+        obj.scratch_cache = scratch_cache
+        obj.readlink_calls = readlink_calls
+        return obj
+
+
+class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
+    """Regression tests for safety-gate relative -c config resolution against compositor cwd."""
+
+    def test_helper_resolve_compositor_config_absolute(self):
+        """Absolute config paths resolve without needing or inspecting proc_cwd."""
+        abs_path = "/mock/dir/conf/config.toml"
+        self.assertEqual(resolve_compositor_config(abs_path), os.path.realpath(abs_path))
+        # proc_cwd should be ignored when config_arg is absolute
+        self.assertEqual(
+            resolve_compositor_config(abs_path, proc_cwd="/different/proc/cwd"),
+            os.path.realpath(abs_path),
+        )
+
+    def test_helper_resolve_compositor_config_relative(self):
+        """Relative config paths resolve against absolute proc_cwd."""
+        self.assertEqual(
+            resolve_compositor_config("conf/config.toml", "/mock/session"),
+            os.path.realpath("/mock/session/conf/config.toml"),
+        )
+        self.assertEqual(
+            resolve_compositor_config("./config.toml", "/mock/session"),
+            os.path.realpath("/mock/session/config.toml"),
+        )
+        self.assertEqual(
+            resolve_compositor_config("sub/../config.toml", "/mock/session"),
+            os.path.realpath("/mock/session/config.toml"),
+        )
+
+    def test_helper_resolve_compositor_config_invalid_proc_cwd(self):
+        """Relative config paths fail to resolve (return None) when proc_cwd is missing, empty, or non-absolute."""
+        self.assertIsNone(resolve_compositor_config("conf/config.toml", None))
+        self.assertIsNone(resolve_compositor_config("conf/config.toml", ""))
+        self.assertIsNone(resolve_compositor_config("conf/config.toml", "   "))
+        self.assertIsNone(resolve_compositor_config("conf/config.toml", "relative/cwd"))
+
+    def test_helper_resolve_compositor_config_invalid_config_arg(self):
+        """Empty, whitespace, non-string, or None config arguments return None."""
+        self.assertIsNone(resolve_compositor_config("", "/mock/session"))
+        self.assertIsNone(resolve_compositor_config("   ", "/mock/session"))
+        self.assertIsNone(resolve_compositor_config(None, "/mock/session"))
+        self.assertIsNone(resolve_compositor_config(123, "/mock/session"))
+
+    @contextlib.contextmanager
+    def _mock_gate_env(
+        self,
+        pid=5555,
+        comm="umbriel",
+        cmdline_args=None,
+        proc_cwd=None,
+        proc_cwd_error=None,
+        target_config="/mock/dir_a/conf/config.toml",
+        display="wayland-1",
+        overlay_cwd=None,
+        readlink_calls=None,
+    ):
+        if cmdline_args is None:
+            cmdline_args = ["umbriel", "-c", "conf/config.toml"]
+        if readlink_calls is None:
+            readlink_calls = []
+
+        sock_path = f"/mock/run/user/1000/umbriel-{display}.sock"
+        scratch_cache = "/mock/cache"
+        log_path = f"{scratch_cache}/umbriel/umbriel.log"
+        cmdline_bytes = b"\x00".join(a.encode("utf-8") for a in cmdline_args) + b"\x00"
+        net_unix = f"Num RefCount Protocol Flags Type St Inode Path\n00000000: 00000002 00000000 00010000 0001 01 987654 {sock_path}\n"
+
+        orig_open = open
+        orig_exists = os.path.exists
+        orig_isdir = os.path.isdir
+        orig_listdir = os.listdir
+        orig_readlink = os.readlink
+
+        def fake_open(path, *args, **kwargs):
+            if path == f"/proc/{pid}/cmdline":
+                return io.BytesIO(cmdline_bytes)
+            if path == f"/proc/{pid}/comm":
+                return io.StringIO(f"{comm}\n")
+            if path == f"/proc/{pid}/environ":
+                return io.BytesIO(b"")
+            if path == log_path:
+                return io.StringIO(f"running on WAYLAND_DISPLAY={display}\n")
+            if path == "/proc/net/unix":
+                return io.StringIO(net_unix)
+            return orig_open(path, *args, **kwargs)
+
+        def fake_exists(path):
+            if path in (target_config, sock_path, log_path, f"/proc/{pid}/comm", f"/proc/{pid}/cmdline"):
+                return True
+            if path in (f"/proc/{pid}/fd/1", f"/proc/{pid}/fd/2"):
+                return False
+            return orig_exists(path)
+
+        def fake_isdir(path):
+            if path == f"/proc/{pid}/fd":
+                return True
+            return orig_isdir(path)
+
+        def fake_listdir(path):
+            if path == f"/proc/{pid}/fd":
+                return ["3"]
+            return orig_listdir(path)
+
+        def fake_readlink(path):
+            readlink_calls.append(path)
+            if path == f"/proc/{pid}/cwd":
+                if proc_cwd_error:
+                    raise proc_cwd_error
+                return proc_cwd
+            if path == f"/proc/{pid}/fd/3":
+                return "socket:[987654]"
+            return orig_readlink(path)
+
+        fake_proc = subprocess.CompletedProcess(args=["pgrep"], returncode=0, stdout=f"{pid}\n")
+
+        env_overrides = {
+            "WAYLAND_DISPLAY": display,
+            "XDG_RUNTIME_DIR": "/mock/run/user/1000",
+            "UMBRIEL_SOCKET": sock_path,
+        }
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch("subprocess.run", return_value=fake_proc))
+        stack.enter_context(unittest.mock.patch("builtins.open", side_effect=fake_open))
+        stack.enter_context(unittest.mock.patch("os.path.exists", side_effect=fake_exists))
+        stack.enter_context(unittest.mock.patch("os.path.isdir", side_effect=fake_isdir))
+        stack.enter_context(unittest.mock.patch("os.listdir", side_effect=fake_listdir))
+        stack.enter_context(unittest.mock.patch("os.readlink", side_effect=fake_readlink))
+        stack.enter_context(unittest.mock.patch.dict(os.environ, env_overrides))
+        if overlay_cwd is not None:
+            stack.enter_context(unittest.mock.patch("os.getcwd", return_value=overlay_cwd))
+
+        with stack:
+            yield GateEnv(scratch_cache, readlink_calls)
+
+    def test_gate_relative_config_different_cwds_refuses(self):
+        """(1) Relative -c with different working directories:
+        Compositor cwd is dir A, overlay cwd is dir B, and the same relative filename
+        (conf/config.toml) exists in both. The gate must not falsely match against dir B's file.
+        Under the old overlay-cwd resolution, this test fails because conf/config.toml resolves
+        against overlay_cwd (dir B) and falsely matches target_in_dir_b.
+        """
+        dir_a = "/mock/dir_a"
+        dir_b = "/mock/dir_b"
+        target_in_dir_b = f"{dir_b}/conf/config.toml"
+
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", "conf/config.toml"],
+            proc_cwd=dir_a,
+            target_config=target_in_dir_b,
+            overlay_cwd=dir_b,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(target_in_dir_b, scratch_cache=sc)
+            self.assertFalse(safe, "Expected gate to refuse matching when compositor cwd points to different config")
+            self.assertIn("Safety gate: no running compositor found", msg)
+
+    def test_gate_relative_config_unreadable_cwd_refuses(self):
+        """(2a) Relative -c with compositor cwd unreadable: candidate does not match and gate fails closed.
+        Under the old overlay-cwd resolution, this test fails because conf/config.toml resolves
+        against overlay_cwd (dir A) and falsely succeeds without establishing compositor cwd.
+        """
+        dir_a = "/mock/dir_a"
+        target_config = f"{dir_a}/conf/config.toml"
+
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", "conf/config.toml"],
+            proc_cwd_error=PermissionError("Permission denied reading /proc/<pid>/cwd"),
+            target_config=target_config,
+            overlay_cwd=dir_a,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(target_config, scratch_cache=sc)
+            self.assertFalse(safe, "Expected gate to refuse matching when compositor cwd is unreadable")
+            self.assertIn("Safety gate: no running compositor found", msg)
+
+    def test_gate_relative_config_invalid_nonabs_cwd_refuses(self):
+        """(2b) Relative -c with compositor cwd invalid or non-absolute: candidate does not match and gate fails closed.
+        Under the old overlay-cwd resolution, this test fails because conf/config.toml resolves
+        against overlay_cwd (dir A) and falsely succeeds despite invalid compositor cwd.
+        """
+        dir_a = "/mock/dir_a"
+        target_config = f"{dir_a}/conf/config.toml"
+
+        for invalid_cwd in ["relative/dir", "", "   "]:
+            with self.subTest(invalid_cwd=invalid_cwd):
+                with self._mock_gate_env(
+                    cmdline_args=["umbriel", "-c", "conf/config.toml"],
+                    proc_cwd=invalid_cwd,
+                    target_config=target_config,
+                    overlay_cwd=dir_a,
+                ) as sc:
+                    safe, msg = overlay.verify_safety_gate(target_config, scratch_cache=sc)
+                    self.assertFalse(safe, "Expected gate to refuse matching when compositor cwd is non-absolute or empty")
+                    self.assertIn("Safety gate: no running compositor found", msg)
+
+    def test_gate_absolute_config_never_reads_cwd(self):
+        """(3) Absolute -c: the gate resolves without reading /proc/<pid>/cwd at all.
+        Asserts that /proc/<pid>/cwd is never recorded in readlink_calls.
+        """
+        dir_a = "/mock/dir_a"
+        target_config = f"{dir_a}/conf/config.toml"
+        pid = 5555
+
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", target_config],
+            target_config=target_config,
+        ) as env:
+            safe, msg = overlay.verify_safety_gate(target_config, scratch_cache=env)
+            self.assertTrue(safe, f"Expected gate to verify successfully, got: {msg}")
+            self.assertIn(f"Verified instance PID {pid} on wayland-1", msg)
+            self.assertNotIn(
+                f"/proc/{pid}/cwd",
+                env.readlink_calls,
+                f"Gate read /proc/{pid}/cwd for absolute -c config: {env.readlink_calls}",
+            )
+
+    def test_gate_relative_config_matching_cwd_proceeds(self):
+        """(4) Relative -c that resolves correctly under compositor's cwd and equals target config:
+        the gate proceeds past the config-matching stage (positive case).
+        """
+        dir_a = "/mock/dir_a"
+        target_config = f"{dir_a}/conf/config.toml"
+
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-c", "conf/config.toml"],
+            proc_cwd=dir_a,
+            target_config=target_config,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(target_config, scratch_cache=sc)
+            self.assertTrue(safe, f"Expected gate to verify successfully, got: {msg}")
+            self.assertIn("Verified instance PID 5555 on wayland-1", msg)
+
+    def test_gate_relative_config_joined_flag_proceeds(self):
+        """Relative -c attached directly without space (-cconf/config.toml) resolves correctly."""
+        dir_a = "/mock/dir_a"
+        target_config = f"{dir_a}/conf/config.toml"
+
+        with self._mock_gate_env(
+            cmdline_args=["umbriel", "-cconf/config.toml"],
+            proc_cwd=dir_a,
+            target_config=target_config,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(target_config, scratch_cache=sc)
+            self.assertTrue(safe, f"Expected gate to verify successfully, got: {msg}")
+            self.assertIn("Verified instance PID 5555 on wayland-1", msg)
 
 
 if __name__ == "__main__":
