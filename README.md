@@ -62,13 +62,13 @@ The overlay employs a five-layer defense-in-depth architecture to ensure actions
 - **Optional Tools**:
   - `grim`: For capturing screenshots.
   - `ffmpeg`: For generating MP4/GIF walkthrough animations.
-  - `gcc` + `wayland-client`: For rebuilding the virtual-pointer test tool (`make -C tests`).
+  - `gcc` + Wayland development headers (Fedora: `wayland-devel`; Debian/Ubuntu: `libwayland-dev`; Arch: `wayland`): For rebuilding the virtual-pointer test tool (`make -C tests`).
 
 ---
 
 ## Quickstart: Safe Nested Session (Recommended)
 
-The easiest and safest way to evaluate the overlay is via the one-command nested launcher from the repository root:
+The easiest and safest way to evaluate the overlay is via the one-command nested launcher from the repository root. Run this from a terminal inside your running graphical Wayland session (for example, inside Hyprland): the nested compositor needs access to the host session's Wayland display. A shell without that environment, such as a headless one, cannot connect.
 
 ```bash
 ./scripts/run-nested.sh
@@ -84,7 +84,7 @@ This single command:
 > [!NOTE]
 > - **Modifier Key**: The example config explicitly sets `Mod` to `Super`. The reopen shortcut uses explicit `Alt+Shift+Space`, independent of `Mod`.
 > - **Session Persistence & Reopening**: When the overlay closes (after running an action or pressing `Escape`), the nested session and any launched apps (such as terminals) stay alive. Press `Alt+Shift+Space` in the nested window to reopen the overlay. When you are done, press `Enter` in the terminal running `run-nested.sh` to cleanly stop the nested compositor.
-> - **Host vs. Nested Clipboard Boundary**: Wayland isolates clipboards between distinct compositor instances by design. Text copied on your host desktop does not pass through to the nested session clipboard. To test `Ctrl+V` pasting in the search box, copy text from an application running inside the nested session (e.g. nested terminal via `Ctrl+Shift+C`) or via `wl-copy` within the nested session.
+> - **Host vs. Nested Clipboard Boundary**: In this nested setup, the nested session's clipboard is separate from the host desktop's clipboard: during testing, text copied on the host did not reach the nested session. To test `Ctrl+V` pasting in the search box, copy text from an application running inside the nested session (e.g. nested terminal via `Ctrl+Shift+C`) or via `wl-copy` within the nested session.
 
 ### Controls
 
@@ -108,11 +108,22 @@ If you prefer to run each step manually rather than using the launcher script:
 SCRATCH=$(mktemp -d /tmp/umbriel-trial.XXXXXX)
 mkdir -p "$SCRATCH/config" "$SCRATCH/cache"
 
+cp "$(pwd)/examples/typical-desktop.toml" "$SCRATCH/config.toml"
+cat << 'EOF' >> "$SCRATCH/config.toml"
+
+# Cursor workaround for nested sessions: keeps the pointer visible
+# over the nested compositor window.
+[input.cursor]
+theme = "Adwaita"
+size = 24
+hardware_cursor = false
+EOF
+
 # Start the nested compositor with the typical desktop example
 XDG_CONFIG_HOME="$SCRATCH/config" \
 XDG_CACHE_HOME="$SCRATCH/cache" \
 WLR_BACKENDS=wayland \
-umbriel -c "$(pwd)/examples/typical-desktop.toml" &
+umbriel -c "$SCRATCH/config.toml" &
 ```
 
 A nested Umbriel window will appear on your desktop.
@@ -144,7 +155,7 @@ umbriel msg cheatsheet-close
 # Run the overlay targeting the nested session
 WAYLAND_DISPLAY="$DISPLAY_NAME" \
 UMBRIEL_SOCKET="/run/user/$UID/umbriel-$DISPLAY_NAME.sock" \
-python3 overlay.py -c "$(pwd)/examples/typical-desktop.toml"
+python3 overlay.py -c "$SCRATCH/config.toml"
 ```
 
 ---
