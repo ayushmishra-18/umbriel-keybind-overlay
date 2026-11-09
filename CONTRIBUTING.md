@@ -34,6 +34,9 @@ python3 tests/test_run_nested.py
 # Parser fixture tests (compatibility baseline fixtures; headless)
 python3 tests/test_parser_fixtures.py
 
+# Installer and uninstaller behavior suite (user-local install/uninstall; headless)
+python3 tests/test_installer.py
+
 # UI behavior tests (sizing, hover, selection sync)
 python3 tests/test_ui_refinement.py
 
@@ -47,7 +50,7 @@ python3 tests/test_live_session.py
 make -C tests
 ```
 
-CI (`.github/workflows/ci.yml`) runs the three headless suites on every push/PR; the live/native/UI suites need a real session locally. All tests must pass before a PR is merged. Before tagging a release, complete a copy of RELEASE_VALIDATION.md; release notes may only claim the validation recorded there.
+CI (`.github/workflows/ci.yml`) runs the four headless suites on every push/PR; the live/native/UI suites need a real session locally. All tests must pass before a PR is merged. Before tagging a release, complete a copy of RELEASE_VALIDATION.md; release notes may only claim the validation recorded there.
 
 ## Pull request guidelines
 
