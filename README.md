@@ -235,7 +235,7 @@ python3 -m unittest tests/test_parser_fixtures.py
 python3 -m unittest tests/test_live_session.py
 ```
 
-Coverage at a glance (counts grow over time): 95 test methods across 6 suites. CI runs the 80 headless tests (test_overlay, test_run_nested, test_parser_fixtures) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
+Coverage at a glance (counts grow over time): 110 test methods across 6 suites. CI runs the 95 headless tests (test_overlay, test_run_nested, test_parser_fixtures) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
 
 ### Virtual Pointer Helper
 
