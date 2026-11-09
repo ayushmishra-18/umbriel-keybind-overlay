@@ -21,6 +21,7 @@ Please include:
 2. Run the overlay against a **nested** Umbriel session with a scratch
    config - never test against your live session. The README's Quickstart
    section walks through this exact setup.
+3. For a map of the code, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Running the tests
 
@@ -63,7 +64,7 @@ CI (`.github/workflows/ci.yml`) runs the four headless suites on every push/PR; 
   the gate still refuses wrong-session and ambiguous targets.
 - **Stay local.** The overlay must never write to system settings
   (no gsettings/dconf writes), never touch the host session's config, and
-  never install anything outside its own directory.
+  installation happens only through the optional user-local scripts/install.sh.
 - **Keep the docs honest.** README claims must match what the code and tests
   actually do. Do not claim compatibility with compositors other than Umbriel.
 
