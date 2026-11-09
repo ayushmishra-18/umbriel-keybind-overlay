@@ -1843,5 +1843,102 @@ class TestSafetyGateRefusals(unittest.TestCase):
             self.assertIn("Safety gate: unreadable /proc/net/unix", msg)
 
 
+class TestSafetyGateDefaultLaunchEnvResolution(unittest.TestCase):
+    """Regression tests for default-launch env resolution (XDG_CONFIG_HOME, HOME, XDG_CACHE_HOME)."""
+
+    _mock_gate_env = TestSafetyGateRelativeConfigResolution._mock_gate_env
+
+    def test_default_launch_relative_xdg_with_absolute_home_proceeds(self):
+        """(a) Relative XDG_CONFIG_HOME ignored per XDG spec; gate matches via absolute HOME fallback and proceeds."""
+        home = "/mock/home"
+        expected_home_config = os.path.realpath(f"{home}/.config/umbriel/config.toml")
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=expected_home_config,
+            proc_environ=f"XDG_CONFIG_HOME=relconf\x00HOME={home}\x00".encode("utf-8"),
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(expected_home_config, scratch_cache=sc)
+            self.assertTrue(safe, f"Expected gate to verify successfully via HOME fallback, got: {msg}")
+            self.assertIn(f"Verified instance PID {pid} on wayland-1", msg)
+
+    def test_default_launch_relative_xdg_with_relative_home_refuses_zero_match(self):
+        """(b) Relative XDG_CONFIG_HOME and relative HOME: candidate skipped -> refuses with zero-match message."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=tc,
+            proc_environ=b"XDG_CONFIG_HOME=relconf\x00HOME=relhome\x00",
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Expected gate to refuse when HOME is relative")
+            self.assertIn("Safety gate: no running compositor found for config.toml", msg)
+
+    def test_default_launch_relative_xdg_overlay_cwd_regression_pin(self):
+        """(c) Core regression pin: relative XDG_CONFIG_HOME and relative HOME must not resolve against overlay cwd."""
+        overlay_cwd = "/mock/overlay_cwd"
+        target_c = "/mock/overlay_cwd/relconf/umbriel/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=target_c,
+            proc_environ=b"XDG_CONFIG_HOME=relconf\x00HOME=relhome\x00",
+            overlay_cwd=overlay_cwd,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(target_c, scratch_cache=sc)
+            self.assertFalse(safe, "Expected gate to refuse rather than falsely matching via overlay cwd")
+            self.assertIn("Safety gate: no running compositor found for config.toml", msg)
+
+    def test_default_launch_absolute_xdg_proceeds(self):
+        """(d) Absolute XDG_CONFIG_HOME: unchanged behavior, gate matches and proceeds."""
+        xdg_dir = "/mock/custom_xdg"
+        expected_xdg_config = os.path.realpath(f"{xdg_dir}/umbriel/config.toml")
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=expected_xdg_config,
+            proc_environ=f"XDG_CONFIG_HOME={xdg_dir}\x00HOME=/mock/home\x00".encode("utf-8"),
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(expected_xdg_config, scratch_cache=sc)
+            self.assertTrue(safe, f"Expected gate to verify successfully via absolute XDG_CONFIG_HOME, got: {msg}")
+            self.assertIn(f"Verified instance PID {pid} on wayland-1", msg)
+
+    def test_default_launch_relative_xdg_with_home_unset_refuses(self):
+        """(e) Relative XDG_CONFIG_HOME + HOME unset: XDG ignored -> hard refusal with cannot-determine-config message."""
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel"],
+            target_config=tc,
+            proc_environ=b"XDG_CONFIG_HOME=relconf\x00",
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Expected gate to refuse when XDG is invalid and HOME unset")
+            self.assertIn(f"Safety gate: cannot determine config for PID {pid}: neither XDG_CONFIG_HOME nor HOME set", msg)
+
+    def test_log_discovery_relative_xdg_cache_ignored_uses_home_cache(self):
+        """(f) Log discovery: relative XDG_CACHE_HOME ignored per spec, absolute HOME cache path used instead."""
+        home = "/mock/home_f"
+        home_cache = f"{home}/.cache"
+        tc = "/mock/dir_a/conf/config.toml"
+        pid = 5555
+        with self._mock_gate_env(
+            pid=pid,
+            cmdline_args=["umbriel", "-c", tc],
+            target_config=tc,
+            scratch_cache=home_cache,
+            proc_environ=f"XDG_CACHE_HOME=relcache\x00HOME={home}\x00".encode("utf-8"),
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=None)
+            self.assertTrue(safe, f"Expected gate to verify successfully via HOME cache fallback, got: {msg}")
+            self.assertIn(f"Verified instance PID {pid} on wayland-1", msg)
+
+
 if __name__ == "__main__":
     unittest.main()
