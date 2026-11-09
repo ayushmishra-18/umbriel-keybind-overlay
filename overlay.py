@@ -218,10 +218,21 @@ def verify_safety_gate(config_path: str, scratch_config: str = None, scratch_cac
             except Exception as e:
                 return False, f"Safety gate: unreadable /proc/{pid}/environ: {e}"
 
-            if proc_env.get("XDG_CONFIG_HOME"):
-                default_path = os.path.join(proc_env["XDG_CONFIG_HOME"], "umbriel", "config.toml")
-            elif proc_env.get("HOME"):
-                default_path = os.path.join(proc_env["HOME"], ".config", "umbriel", "config.toml")
+            # XDG Base Directory specification requires XDG_CONFIG_HOME to be absolute;
+            # relative values must be treated as invalid and ignored.
+            # Requiring HOME to be absolute is a deliberate fail-closed safety policy.
+            xdg_config = proc_env.get("XDG_CONFIG_HOME")
+            home = proc_env.get("HOME")
+
+            if xdg_config and os.path.isabs(xdg_config):
+                default_path = os.path.join(xdg_config, "umbriel", "config.toml")
+            elif home and os.path.isabs(home):
+                default_path = os.path.join(home, ".config", "umbriel", "config.toml")
+            elif home and not os.path.isabs(home):
+                # Relative HOME cannot safely be resolved against another process's context;
+                # skip this candidate (matching -c unresolvable-candidate semantics).
+                proc_config = None
+                continue
             else:
                 return False, f"Safety gate: cannot determine config for PID {pid}: neither XDG_CONFIG_HOME nor HOME set"
             proc_config = os.path.realpath(default_path)
@@ -254,13 +265,18 @@ def verify_safety_gate(config_path: str, scratch_config: str = None, scratch_cac
         except Exception as e:
             return False, f"Safety gate: unreadable /proc/{matched_pid}/environ: {e}"
 
-        if proc_env.get("XDG_CACHE_HOME"):
-            cand = os.path.join(proc_env["XDG_CACHE_HOME"], "umbriel", "umbriel.log")
-            if os.path.exists(cand) or os.path.exists(os.path.join(proc_env["XDG_CACHE_HOME"], "umbriel", "umbriel-stderr.log")):
+        # XDG Base Directory specification requires XDG_CACHE_HOME to be absolute;
+        # relative values must be treated as invalid and ignored.
+        # Requiring HOME to be absolute is a deliberate fail-closed safety policy.
+        xdg_cache = proc_env.get("XDG_CACHE_HOME")
+        home = proc_env.get("HOME")
+        if xdg_cache and os.path.isabs(xdg_cache):
+            cand = os.path.join(xdg_cache, "umbriel", "umbriel.log")
+            if os.path.exists(cand) or os.path.exists(os.path.join(xdg_cache, "umbriel", "umbriel-stderr.log")):
                 log_path = cand
-        elif proc_env.get("HOME"):
-            cand = os.path.join(proc_env["HOME"], ".cache", "umbriel", "umbriel.log")
-            if os.path.exists(cand) or os.path.exists(os.path.join(proc_env["HOME"], ".cache", "umbriel", "umbriel-stderr.log")):
+        elif home and os.path.isabs(home):
+            cand = os.path.join(home, ".cache", "umbriel", "umbriel.log")
+            if os.path.exists(cand) or os.path.exists(os.path.join(home, ".cache", "umbriel", "umbriel-stderr.log")):
                 log_path = cand
 
     if not log_path:
