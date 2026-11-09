@@ -1,0 +1,6 @@
+# Circular include test - file A
+[include]
+files = ["cycle_b.toml"]
+
+[keybinds]
+"Mod+A" = "spawn cycle-a"
