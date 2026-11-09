@@ -66,6 +66,17 @@ The overlay employs a five-layer defense-in-depth architecture to ensure actions
 
 ---
 
+## Getting the Code
+
+```bash
+git clone https://github.com/ayushmishra-18/umbriel-keybind-overlay.git
+cd umbriel-keybind-overlay
+```
+
+All commands below assume you are running them from this directory.
+
+---
+
 ## Quickstart: Safe Nested Session (Recommended)
 
 The easiest and safest way to evaluate the overlay is via the one-command nested launcher from the repository root. Run this from a terminal inside your running graphical Wayland session (for example, inside Hyprland): the nested compositor needs access to the host session's Wayland display. A shell without that environment, such as a headless one, cannot connect.
@@ -181,6 +192,19 @@ To launch the overlay via shortcut (for example, `Mod+Space`), add this entry to
 
 ---
 
+## Uninstalling
+
+Cloning and running the overlay installs nothing system-wide - no pip packages and nothing placed in system locations. Any screenshots, logs, or other files you created while testing are separate and are not removed by these steps.
+
+1. **Stop any running overlay and nested sessions** (close the popup, and stop the nested compositor if one is running from `scripts/run-nested.sh`).
+2. **Remove your host keybind entry, if you added one.** If you added the `spawn python3 .../overlay.py` entry to your `~/.config/umbriel/config.toml` to launch the overlay with a shortcut, delete that one entry and leave the rest of your configuration unchanged.
+3. **Delete the cloned directory.** This also deletes any local changes you made inside it; save anything you want to keep first.
+4. **Optionally remove trial scratch directories.** When a nested session from `scripts/run-nested.sh` ends, it prints the exact scratch directory it used (for example `/tmp/umbriel-trial.XXXXXX`) and leaves it in place. You can delete that specific directory once no nested session is running from it - save any screenshots or logs inside it first.
+
+Do not uninstall the prerequisite system packages (Python, GTK 3, gtk-layer-shell, PyGObject): they are shared dependencies that other software on your system may rely on.
+
+---
+
 ## Running Tests & Reproducing Tooling
 
 ### Test Suites
@@ -196,6 +220,9 @@ python3 -m unittest tests/test_native_session.py
 
 # UI refinement tests (sizing extremes, cursor fallback, hover sync)
 python3 -m unittest tests/test_ui_refinement.py
+
+# Launcher behavior tests (fake compositor/overlay processes; headless, no Wayland needed)
+python3 -m unittest tests/test_run_nested.py
 ```
 
 ### Virtual Pointer Helper
