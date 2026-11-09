@@ -1,0 +1,6 @@
+# Root config with missing required include
+[include]
+files = ["nonexistent_required.toml"]
+
+[keybinds]
+"Mod+M" = "spawn root"
