@@ -28,6 +28,9 @@ Please include:
 # Non-graphical unit tests (parsing, actions, chord rendering, width clamping)
 python3 tests/test_overlay.py
 
+# Headless launcher behavior suite (fake compositor/overlay, no Wayland needed)
+python3 tests/test_run_nested.py
+
 # UI behavior tests (sizing, hover, selection sync)
 python3 tests/test_ui_refinement.py
 
@@ -38,7 +41,7 @@ python3 tests/test_native_session.py
 make -C tests
 ```
 
-All tests must pass before a PR is merged.
+CI (`.github/workflows/ci.yml`) runs the two headless suites on every push/PR; the live/native/UI suites need a real session locally. All tests must pass before a PR is merged.
 
 ## Pull request guidelines
 
