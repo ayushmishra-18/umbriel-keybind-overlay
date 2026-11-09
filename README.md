@@ -78,6 +78,29 @@ cd umbriel-keybind-overlay
 
 All commands below assume you are running them from this directory.
 
+### Optional User-Local Installer
+
+An optional installer script is available to simplify setup:
+
+```bash
+bash scripts/install.sh
+```
+
+What it does:
+
+- **Dependency check only**: Verifies that Python (>= 3.11) and the required GTK 3 / PyGObject / gtk-layer-shell bindings are present. It never installs system packages. If dependencies are missing, it prints the exact package commands for your distribution and exits without modifying anything.
+- **User-local installation**: Copies managed application files (`overlay.py`, `umbriel_keys.py`, `style.css`, and a copy of `uninstall.sh`) to `${XDG_DATA_HOME:-$HOME/.local/share}/umbriel-keybind-overlay`.
+- **Launcher script**: Generates an executable launcher at `~/.local/bin/umbriel-keybind-overlay`.
+- **Ownership manifest**: Records SHA-256 hashes in `.install-manifest` to enable safe, verified removal.
+- **Compositor configuration untouched**: The installer never modifies your compositor configuration or system settings; it outputs the exact snippet for you to add to your `~/.config/umbriel/config.toml`.
+
+Options:
+
+- `--skip-deps-check`: Bypasses the Python and GTK runtime dependency check.
+- `--force`: Overrides existing unmanaged or modified files.
+
+The manual installation method (running directly from the repository) remains unchanged and fully supported.
+
 ---
 
 ## Quickstart: Safe Nested Session (Recommended)
@@ -204,6 +227,20 @@ Cloning and running the overlay installs nothing system-wide - no pip packages a
 3. **Delete the cloned directory.** This also deletes any local changes you made inside it; save anything you want to keep first.
 4. **Optionally remove trial scratch directories.** When a nested session from `scripts/run-nested.sh` ends, it prints the exact scratch directory it used (for example `/tmp/umbriel-trial.XXXXXX`) and leaves it in place. You can delete that specific directory once no nested session is running from it - save any screenshots or logs inside it first.
 
+### Installer Users
+
+If you installed the overlay via `bash scripts/install.sh`, run the uninstaller:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/umbriel-keybind-overlay/uninstall.sh"
+# or from the repository root:
+bash scripts/uninstall.sh
+```
+
+The uninstaller uses `.install-manifest` to verify ownership: it removes only unmodified files it installed, leaving user-modified and user-added files alone. The data directory is removed only if empty. Options include `-y`/`--yes` to bypass confirmation and `--force` to remove modified files.
+
+Remember to manually remove any keybind entry you added to your `~/.config/umbriel/config.toml`.
+
 Do not uninstall the prerequisite system packages (Python, GTK 3, gtk-layer-shell, PyGObject): they are shared dependencies that other software on your system may rely on.
 
 ---
@@ -230,11 +267,14 @@ python3 -m unittest tests/test_run_nested.py
 # Parser fixture tests (compatibility baseline fixtures; headless)
 python3 -m unittest tests/test_parser_fixtures.py
 
+# Installer and uninstaller behavior tests (user-local install/uninstall; headless)
+python3 -m unittest tests/test_installer.py
+
 # Live session tests (expects an already-running nested Umbriel session; skips cleanly otherwise)
 python3 -m unittest tests/test_live_session.py
 ```
 
-Coverage at a glance (counts grow over time): 116 test methods across 6 suites. CI runs the 101 headless tests (test_overlay, test_run_nested, test_parser_fixtures) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
+Coverage at a glance (counts grow over time): 134 test methods across 7 suites. CI runs the 119 headless tests (test_overlay, test_run_nested, test_parser_fixtures, test_installer) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
 
 ### Virtual Pointer Helper
 
