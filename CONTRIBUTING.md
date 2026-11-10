@@ -44,7 +44,14 @@ python3 tests/test_ui_refinement.py
 # Native session gate tests (spins up an isolated nested compositor)
 python3 tests/test_native_session.py
 
-# Live session tests (expects an already-running nested Umbriel session; skips cleanly otherwise)
+# Live session tests (skips cleanly if no matching nested session is running)
+# Requires a running nested Umbriel compositor with no pre-existing overlay
+# (if started via run-nested.sh, close the popup with Esc before running the suite):
+#   export WAYLAND_DISPLAY=<nested_display>
+#   export UMBRIEL_SOCKET="${XDG_RUNTIME_DIR:-/run/user/$UID}/umbriel-$WAYLAND_DISPLAY.sock"
+#   export TEST_UMBRIEL_CONFIG=<path/to/scratch/config.toml>
+#   export TEST_UMBRIEL_CACHE=<path/to/scratch/cache>
+#   (Optional: prefix PATH for a candidate umbriel build)
 python3 tests/test_live_session.py
 
 # Rebuild the virtual-pointer helper if you touch pointer code
