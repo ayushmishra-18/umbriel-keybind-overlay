@@ -70,6 +70,7 @@ mod_key = "alt"
         cls.compositor_proc = subprocess.Popen(
             ["umbriel"],
             env=cls.env,
+            cwd=cls.scratch_dir,
             stdout=cls.stdout_fh,
             stderr=subprocess.STDOUT
         )
