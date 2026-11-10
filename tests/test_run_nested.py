@@ -120,6 +120,7 @@ def log_call():
     if calls_log:
         with open(calls_log, "a") as f:
             f.write(f"ARGS: {sys.argv}\\n")
+            f.write(f"CWD={os.getcwd()}\\n")
             f.write(f"WLR_BACKENDS={os.environ.get('WLR_BACKENDS')}\\n")
             f.write(f"XDG_CONFIG_HOME={os.environ.get('XDG_CONFIG_HOME')}\\n")
             f.write(f"XDG_CACHE_HOME={os.environ.get('XDG_CACHE_HOME')}\\n")
@@ -586,6 +587,39 @@ while True:
         # Compositor must be dead
         with self.assertRaises(OSError):
             os.kill(comp_pid, 0)
+
+    def test_10_compositor_cwd_is_scratch_dir(self):
+        """10. Compositor cwd: verify nested compositor is started with cwd = scratch dir so relative outputs stay in scratch."""
+        launcher = os.path.join(self.repo_copy, "scripts", "run-nested.sh")
+        proc = subprocess.Popen(
+            [launcher],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self._get_env(),
+            cwd=self.repo_copy,
+        )
+
+        stdout_acc = ""
+        while "Press Enter to stop the test session..." not in stdout_acc:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            stdout_acc += line
+        scratch_dir = self._extract_scratch_dir(stdout_acc)
+
+        proc.communicate(input="\n", timeout=5)
+
+        calls_file = os.path.join(self.state_dir, "umbriel_calls.log")
+        with open(calls_file) as f:
+            calls_content = f.read()
+
+        cwd_match = re.search(r"^CWD=(.+)$", calls_content, re.MULTILINE)
+        self.assertIsNotNone(cwd_match, "umbriel_calls.log must contain CWD entry")
+        logged_cwd = cwd_match.group(1).strip()
+        self.assertEqual(logged_cwd, scratch_dir, f"Compositor cwd ({logged_cwd}) must match scratch dir ({scratch_dir})")
+        self.assertNotEqual(logged_cwd, self.repo_copy, "Compositor cwd must not be inherited repo cwd")
 
 
 if __name__ == "__main__":
