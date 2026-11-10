@@ -2,12 +2,15 @@
 """Unit tests for the Umbriel Keybind Overlay."""
 
 import contextlib
+import errno
 import io
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
+import time
 import unittest
 import unittest.mock
 
@@ -1357,6 +1360,7 @@ class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
         env_umbriel_socket=None,
         env_xdg_runtime_dir=None,
         extra_env=None,
+        proc_isdir_map=None,
     ):
         if pids is None:
             pids = [pid]
@@ -1446,7 +1450,13 @@ class TestSafetyGateRelativeConfigResolution(unittest.TestCase):
             return orig_exists(path)
 
         def fake_isdir(path):
+            if proc_isdir_map is not None:
+                for p in pids:
+                    if path == f"/proc/{p}":
+                        return proc_isdir_map.get(p, True)
             for p in pids:
+                if path == f"/proc/{p}":
+                    return True
                 if path == f"/proc/{p}/fd":
                     return fd_dir_is_dir
             return orig_isdir(path)
@@ -1842,6 +1852,216 @@ class TestSafetyGateRefusals(unittest.TestCase):
             self.assertFalse(safe, "Gate must refuse when /proc/net/unix is unreadable")
             self.assertIn("Safety gate: unreadable /proc/net/unix", msg)
 
+    def test_vanished_candidate_pid_environ_continues(self):
+        """A candidate PID vanishes between scan and environ read (ESRCH/ENOENT):
+        gate treats it as not-a-candidate and successfully matches the surviving compositor."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/environ": FileNotFoundError(errno.ESRCH, "No such process"),
+            },
+            proc_isdir_map={9999: False, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertTrue(safe, f"Gate should ignore vanished candidate PID and verify matched compositor. Message: {msg}")
+
+    def test_vanished_candidate_pid_cmdline_continues(self):
+        """A candidate PID vanishes between scan and cmdline read (ESRCH/ENOENT):
+        gate treats it as not-a-candidate and successfully matches the surviving compositor."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/cmdline": FileNotFoundError(errno.ENOENT, "No such file or directory"),
+            },
+            proc_isdir_map={9999: False, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertTrue(safe, f"Gate should ignore vanished candidate PID and verify matched compositor. Message: {msg}")
+
+    def test_vanished_candidate_pid_unusual_errno_continues(self):
+        """A candidate PID vanishes and open fails with an unusual errno (e.g. EIO):
+        gate treats it as not-a-candidate because the PID is gone (/proc/<pid> not dir)."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/cmdline": OSError(errno.EIO, "Input/output error"),
+            },
+            proc_isdir_map={9999: False, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertTrue(safe, f"Gate should ignore vanished candidate PID regardless of errno. Message: {msg}")
+
+    def test_surviving_unreadable_candidate_pid_cmdline_refuses(self):
+        """A candidate PID survives (/proc/<pid> is dir) but cmdline is unreadable:
+        gate must refuse fail-closed."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/cmdline": PermissionError(errno.EACCES, "Permission denied"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate cmdline is unreadable and process survives")
+            self.assertIn("Safety gate: unreadable /proc/9999/cmdline", msg)
+
+    def test_surviving_unreadable_candidate_pid_environ_refuses(self):
+        """A candidate PID survives (/proc/<pid> is dir) but default launch environ is unreadable:
+        gate must refuse fail-closed."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/environ": PermissionError(errno.EACCES, "Permission denied"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate environ is unreadable and process survives")
+            self.assertIn("Safety gate: unreadable /proc/9999/environ", msg)
+
+    def test_surviving_candidate_pid_environ_esrch_refuses(self):
+        """A candidate PID survives (/proc/<pid> is dir) but environ read raises ESRCH:
+        gate must refuse fail-closed because the process still exists."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/environ": FileNotFoundError(errno.ESRCH, "No such process"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate environ fails with ESRCH but process survives")
+            self.assertIn("Safety gate: unreadable /proc/9999/environ", msg)
+
+    def test_surviving_candidate_pid_environ_enoent_refuses(self):
+        """A candidate PID survives (/proc/<pid> is dir) but environ read raises ENOENT:
+        gate must refuse fail-closed because the process still exists."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/environ": FileNotFoundError(errno.ENOENT, "No such file or directory"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate environ fails with ENOENT but process survives")
+            self.assertIn("Safety gate: unreadable /proc/9999/environ", msg)
+
+    def test_surviving_candidate_pid_cmdline_esrch_refuses(self):
+        """A candidate PID survives (/proc/<pid> is dir) but cmdline read raises ESRCH:
+        gate must refuse fail-closed because the process still exists."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/cmdline": FileNotFoundError(errno.ESRCH, "No such process"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate cmdline fails with ESRCH but process survives")
+            self.assertIn("Safety gate: unreadable /proc/9999/cmdline", msg)
+
+    def test_surviving_candidate_pid_cmdline_enoent_refuses(self):
+        """A candidate PID survives (/proc/<pid> is dir) but cmdline read raises ENOENT:
+        gate must refuse fail-closed because the process still exists."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/cmdline": FileNotFoundError(errno.ENOENT, "No such file or directory"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate cmdline fails with ENOENT but process survives")
+            self.assertIn("Safety gate: unreadable /proc/9999/cmdline", msg)
+
+    def test_surviving_unreadable_zombie_environ_refuses(self):
+        """A surviving unreadable zombie candidate (/proc/<pid> is dir, state Z, open environ raises ESRCH):
+        gate must refuse fail-closed because the process directory still survives."""
+        tc = "/mock/dir_a/conf/config.toml"
+        with self._mock_gate_env(
+            pids=[5555, 9999],
+            cmdline_map={
+                5555: ["umbriel", "-c", tc],
+                9999: ["umbriel"],
+            },
+            target_config=tc,
+            open_errors={
+                "/proc/9999/environ": FileNotFoundError(errno.ESRCH, "No such process"),
+            },
+            proc_isdir_map={9999: True, 5555: True},
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when candidate is an unreadable surviving zombie")
+            self.assertIn("Safety gate: unreadable /proc/9999/environ", msg)
+
+    def test_zero_matches_refuses(self):
+        """Zero matches: no running compositor found for target config -> refuse fail-closed."""
+        tc = "/mock/dir_a/conf/config.toml"
+        other_tc = "/mock/other/config.toml"
+        with self._mock_gate_env(
+            pid=5555,
+            cmdline_args=["umbriel", "-c", other_tc],
+            target_config=tc,
+        ) as sc:
+            safe, msg = overlay.verify_safety_gate(tc, scratch_cache=sc)
+            self.assertFalse(safe, "Gate must refuse when no running compositor matches target config")
+            self.assertIn("Safety gate: no running compositor found", msg)
+
 
 class TestSafetyGateDefaultLaunchEnvResolution(unittest.TestCase):
     """Regression tests for default-launch env resolution (XDG_CONFIG_HOME, HOME, XDG_CACHE_HOME)."""
@@ -1938,6 +2158,346 @@ class TestSafetyGateDefaultLaunchEnvResolution(unittest.TestCase):
             safe, msg = overlay.verify_safety_gate(tc, scratch_cache=None)
             self.assertTrue(safe, f"Expected gate to verify successfully via HOME cache fallback, got: {msg}")
             self.assertIn(f"Verified instance PID {pid} on wayland-1", msg)
+
+
+class TestSubmapListenerLifecycle(unittest.TestCase):
+    """Regression tests for submap listener background thread and child process lifecycle."""
+
+    def _make_app(self):
+        class DummyOverlay:
+            def __init__(self):
+                self._destroyed = False
+                self._cleaned_up = False
+                self._cancel_event = threading.Event()
+                self._pending_proc = None
+                self._proc_lock = threading.Lock()
+                self._submap_lock = threading.Lock()
+                self.submap_listener_proc = None
+                self.status_calls = []
+                self._active_submap = None
+                self.ready_event = threading.Event()
+
+            def set_status(self, text, status_type="info"):
+                self.status_calls.append((text, status_type))
+
+            def set_active_submap(self, submap):
+                self._active_submap = submap
+                if submap == "ready":
+                    self.ready_event.set()
+
+            def _on_destroy(self, widget=None):
+                overlay.KeybindOverlay._on_destroy(self, widget)
+
+        return DummyOverlay()
+
+    def test_listener_reaps_child_at_eof(self):
+        """Listener reaps its child at EOF: child is not a zombie and returncode is set."""
+        app = self._make_app()
+        real_popen = subprocess.Popen
+
+        def mock_popen(args, **kwargs):
+            if args and args[0] == "umbriel" and len(args) > 1 and args[1] == "subscribe":
+                return real_popen(
+                    [sys.executable, "-c", "import sys; sys.exit(0)"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+            return real_popen(args, **kwargs)
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen), \
+             unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1)):
+            overlay.KeybindOverlay._start_submap_listener(app)
+            t = app._submap_listener_thread
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "Listener thread must finish after stdout EOF")
+
+            proc = app.submap_listener_proc
+            self.assertIsNotNone(proc, "submap_listener_proc must be assigned")
+            self.assertIsNotNone(proc.returncode, "Listener thread must reap child at EOF so returncode is set")
+            stat_file = f"/proc/{proc.pid}/stat"
+            if os.path.exists(stat_file):
+                try:
+                    with open(stat_file, "r") as f:
+                        state = f.read().split()[2]
+                    self.assertNotEqual(state, "Z", "Child process must not be left in state Z (zombie)")
+                except FileNotFoundError:
+                    pass
+
+    def test_destroy_after_thread_reaped(self):
+        """_on_destroy() after thread already reaped: no exception and no signal call on Popen."""
+        app = self._make_app()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        self.assertIsNotNone(proc.returncode)
+
+        orig_terminate = proc.terminate
+        terminate_calls = []
+
+        def spy_terminate(*a, **kw):
+            terminate_calls.append(True)
+            return orig_terminate(*a, **kw)
+
+        proc.terminate = spy_terminate
+        app.submap_listener_proc = proc
+
+        app._on_destroy(None)
+        self.assertEqual(len(terminate_calls), 0, "_on_destroy() must not send signal to already-reaped child")
+
+    def test_destroy_while_child_running(self):
+        """_on_destroy() while child is running: child terminated and reaped boundedly, even if SIGTERM trapped."""
+        app = self._make_app()
+        child_code = (
+            "import signal, time, sys, json\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "sys.stdout.write(json.dumps({'event': 'submap', 'data': 'ready'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", child_code],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        line = proc.stdout.readline()
+        self.assertIn("ready", line)
+        app.submap_listener_proc = proc
+        try:
+            t0 = time.perf_counter()
+            app._on_destroy(None)
+            elapsed = time.perf_counter() - t0
+            self.assertLess(elapsed, 1.0, "_on_destroy() on main thread must return within bounded time")
+            self.assertIsNotNone(proc.poll(), "_on_destroy() must terminate and kill child even if SIGTERM is ignored")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_stdout_closed_but_child_alive(self):
+        """Stdout closed but child alive: thread terminates and kills child within bounded timeouts."""
+        app = self._make_app()
+        real_popen = subprocess.Popen
+
+        def mock_popen(args, **kwargs):
+            if args and args[0] == "umbriel" and len(args) > 1 and args[1] == "subscribe":
+                return real_popen(
+                    [
+                        sys.executable,
+                        "-u",
+                        "-c",
+                        "import signal, time, sys, os; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.close(1); time.sleep(30)",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+            return real_popen(args, **kwargs)
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen), \
+             unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1)):
+            t0 = time.perf_counter()
+            overlay.KeybindOverlay._start_submap_listener(app)
+            t = app._submap_listener_thread
+            t.join(timeout=2.0)
+            elapsed = time.perf_counter() - t0
+            self.assertFalse(t.is_alive(), "Listener thread must finish within bounded time")
+            self.assertLess(elapsed, 1.5, "Cleanup must complete within bounded timeouts")
+
+            proc = app.submap_listener_proc
+            self.assertIsNotNone(proc, "submap_listener_proc must be assigned")
+            self.assertIsNotNone(proc.poll(), "Thread must kill and reap child if stdout closes while child alive")
+
+    def test_decide_publish_ordering_destroy_first(self):
+        """Ordering A: destroy runs before thread decides/publishes -> child reaped immediately, not published."""
+        app = self._make_app()
+        real_popen = subprocess.Popen
+        created_proc = []
+
+        def mock_popen(args, **kwargs):
+            if args and args[0] == "umbriel" and len(args) > 1 and args[1] == "subscribe":
+                p = real_popen(["sh", "-c", "sleep 30"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                created_proc.append(p)
+                app._on_destroy(None)
+                return p
+            return real_popen(args, **kwargs)
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen), \
+             unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1)):
+            overlay.KeybindOverlay._start_submap_listener(app)
+            t = app._submap_listener_thread
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "Thread must finish promptly")
+            self.assertTrue(len(created_proc) > 0)
+            p = created_proc[0]
+            try:
+                self.assertIsNone(app.submap_listener_proc, "submap_listener_proc must not be published if destroyed")
+                self.assertIsNotNone(p.poll(), "Child must be reaped by the thread")
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+
+    def test_decide_publish_ordering_thread_first(self):
+        """Ordering B: thread decides/publishes before destroy runs -> destroy owns child and reaps it."""
+        app = self._make_app()
+        real_popen = subprocess.Popen
+        child_code = (
+            "import signal, time, sys, json\n"
+            "sys.stdout.write(json.dumps({'event': 'submap', 'data': 'ready'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+
+        def mock_popen(args, **kwargs):
+            if args and args[0] == "umbriel" and len(args) > 1 and args[1] == "subscribe":
+                return real_popen(
+                    [sys.executable, "-u", "-c", child_code],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+            return real_popen(args, **kwargs)
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen), \
+             unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1)):
+            overlay.KeybindOverlay._start_submap_listener(app)
+            ctx = GLib.MainContext.default()
+            while not app.ready_event.is_set():
+                ctx.iteration(True)
+
+            self.assertIsNotNone(app.submap_listener_proc)
+            p = app.submap_listener_proc
+            try:
+                app._on_destroy(None)
+                t = app._submap_listener_thread
+                t.join(timeout=2.0)
+                self.assertFalse(t.is_alive(), "Listener thread must terminate")
+                self.assertIsNotNone(p.poll(), "Child must be reaped by destroy()")
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+
+    def test_forced_interleaving_destroy_during_assignment(self):
+        """Forced interleaving: destroy() slips in after Popen returns but before thread publishes.
+        Lock ensures exactly one side owns the child and reaps it."""
+        class InterleavingDummyOverlay(self._make_app().__class__):
+            def __init__(self):
+                super().__init__()
+                self.interleave_event = threading.Event()
+                self.destroy_done_event = threading.Event()
+
+        app = InterleavingDummyOverlay()
+        real_popen = subprocess.Popen
+        created_proc = []
+
+        def mock_popen(args, **kwargs):
+            if args and args[0] == "umbriel" and len(args) > 1 and args[1] == "subscribe":
+                p = real_popen(["sh", "-c", "sleep 30"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                created_proc.append(p)
+                app.interleave_event.set()
+                app.destroy_done_event.wait(timeout=2.0)
+                return p
+            return real_popen(args, **kwargs)
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen), \
+             unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1)):
+            overlay.KeybindOverlay._start_submap_listener(app)
+            self.assertTrue(app.interleave_event.wait(timeout=2.0))
+            app._on_destroy(None)
+            app.destroy_done_event.set()
+
+            t = app._submap_listener_thread
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "Thread must finish and not block on stdout")
+            self.assertTrue(len(created_proc) > 0)
+            p = created_proc[0]
+            try:
+                self.assertIsNone(app.submap_listener_proc, "Child must not be published after destroy")
+                self.assertIsNotNone(p.poll(), "Child must be reaped (no leak)")
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+
+    def test_destroy_with_reader_blocked_on_sigterm_ignoring_child(self):
+        """Destroy with reader blocked on SIGTERM-ignoring child: returns boundedly, child killed, thread joins."""
+        app = self._make_app()
+        real_popen = subprocess.Popen
+
+        child_code = (
+            "import signal, time, sys, json\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "sys.stdout.write(json.dumps({'event': 'submap', 'data': 'ready'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+
+        def mock_popen(args, **kwargs):
+            if args and args[0] == "umbriel" and len(args) > 1 and args[1] == "subscribe":
+                return real_popen(
+                    [sys.executable, "-u", "-c", child_code],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+            return real_popen(args, **kwargs)
+
+        with unittest.mock.patch("subprocess.Popen", side_effect=mock_popen), \
+             unittest.mock.patch("subprocess.run", return_value=unittest.mock.MagicMock(returncode=1)):
+            overlay.KeybindOverlay._start_submap_listener(app)
+            ctx = GLib.MainContext.default()
+            while not app.ready_event.is_set():
+                ctx.iteration(True)
+
+            self.assertIsNotNone(app.submap_listener_proc)
+            proc = app.submap_listener_proc
+
+            try:
+                t0 = time.perf_counter()
+                app._on_destroy(None)
+                elapsed = time.perf_counter() - t0
+                self.assertLess(elapsed, 0.8, f"_on_destroy took {elapsed:.3f}s, must be bounded (<0.8s)")
+
+                t = app._submap_listener_thread
+                t.join(timeout=2.0)
+                self.assertFalse(t.is_alive(), "Listener thread must join cleanly")
+                self.assertEqual(proc.poll(), -signal.SIGKILL, "Child must be killed with SIGKILL")
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+    def test_cleanup_runs_once(self):
+        """Cleanup runs once: calling _on_destroy multiple times is idempotent."""
+        app = self._make_app()
+        proc = subprocess.Popen(["sh", "-c", "sleep 30"])
+        app.submap_listener_proc = proc
+
+        try:
+            app._on_destroy(None)
+            self.assertTrue(app._cleaned_up)
+            self.assertTrue(app._destroyed)
+            self.assertIsNotNone(proc.poll())
+
+            # Second call must be a no-op
+            app._on_destroy(None)
+            self.assertTrue(app._cleaned_up)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_real_window_destroy_calls_on_destroy_once(self):
+        """On a real KeybindOverlay window, calling app.destroy() invokes _on_destroy exactly once."""
+        if not Gtk.init_check()[0]:
+            self.skipTest("No display available; a real Gtk window cannot be created")
+        app = overlay.KeybindOverlay(
+            PROJECT_DIR + "/examples/typical-desktop.toml",
+            scratch_config=PROJECT_DIR + "/examples/typical-desktop.toml"
+        )
+        self.assertFalse(app._cleaned_up)
+        app.destroy()
+        self.assertTrue(app._cleaned_up)
 
 
 if __name__ == "__main__":
