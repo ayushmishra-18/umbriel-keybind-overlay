@@ -270,11 +270,18 @@ python3 -m unittest tests/test_parser_fixtures.py
 # Installer and uninstaller behavior tests (user-local install/uninstall; headless)
 python3 -m unittest tests/test_installer.py
 
-# Live session tests (expects an already-running nested Umbriel session; skips cleanly otherwise)
+# Live session tests (skips cleanly if no matching nested session is running)
+# Requires a running nested session with no pre-existing overlay (if started via
+# run-nested.sh, close the popup with Esc before running the suite):
+#   export WAYLAND_DISPLAY=<nested_display>           # e.g. wayland-0
+#   export UMBRIEL_SOCKET="${XDG_RUNTIME_DIR:-/run/user/$UID}/umbriel-$WAYLAND_DISPLAY.sock"
+#   export TEST_UMBRIEL_CONFIG=<path/to/scratch/config.toml> # matches `umbriel -c <config>`
+#   export TEST_UMBRIEL_CACHE=<path/to/scratch/cache>
+#   (Optional: prefix PATH for a candidate umbriel build)
 python3 -m unittest tests/test_live_session.py
 ```
 
-Coverage at a glance (counts grow over time): 134 test methods across 7 suites. CI runs the 119 headless tests (test_overlay, test_run_nested, test_parser_fixtures, test_installer) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session expects an already-running nested session.
+Coverage at a glance (counts grow over time): 156 test methods across 7 suites. CI runs the 141 headless tests (test_overlay, test_run_nested, test_parser_fixtures, test_installer) on every push. The other suites run locally: test_native_session and test_ui_refinement start their own nested Umbriel session and need the umbriel executable and a host graphical Wayland session (the UI suite also uses the virtual-pointer helper from make -C tests); test_live_session runs against a running nested session (exporting WAYLAND_DISPLAY, UMBRIEL_SOCKET, TEST_UMBRIEL_CONFIG, and TEST_UMBRIEL_CACHE with no pre-existing overlay running; skips cleanly if no matching session is running).
 
 ### Virtual Pointer Helper
 
