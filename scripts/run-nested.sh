@@ -129,10 +129,11 @@ STDOUT_LOG="$CACHE_DIR/umbriel/stdout.log"
 STDERR_LOG="$CACHE_DIR/umbriel/stderr.log"
 
 echo "[2/5] Starting nested Umbriel compositor..."
-XDG_CONFIG_HOME="$CONFIG_DIR" \
-XDG_CACHE_HOME="$CACHE_DIR" \
-WLR_BACKENDS=wayland \
-umbriel -c "$SCRATCH_CONFIG" > "$STDOUT_LOG" 2> "$STDERR_LOG" &
+(cd "$SCRATCH" && exec env \
+    XDG_CONFIG_HOME="$CONFIG_DIR" \
+    XDG_CACHE_HOME="$CACHE_DIR" \
+    WLR_BACKENDS=wayland \
+    umbriel -c "$SCRATCH_CONFIG" > "$STDOUT_LOG" 2> "$STDERR_LOG") &
 COMPOSITOR_PID=$!
 
 # 4. Resolve the nested session's display name from logs
