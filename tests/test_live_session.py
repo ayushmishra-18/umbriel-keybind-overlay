@@ -69,6 +69,7 @@ class TestLiveOverlayFixes(unittest.TestCase):
                 scratch_config=self.SCRATCH_CONFIG,
                 scratch_cache=self.SCRATCH_CACHE
             )
+            self.addCleanup(app.destroy)
             app.show_all()
             self._pump_events(0.2)
 
@@ -79,7 +80,7 @@ class TestLiveOverlayFixes(unittest.TestCase):
 
             status_text = app.status_label.get_text()
             print("\n[Fix 1 Test Output] Status on wrong socket:", status_text)
-            self.assertIn("Safety gate: UMBRIEL_SOCKET mismatch", status_text)
+            self.assertIn("Safety gate: UMBRIEL_SOCKET path mismatch", status_text)
             self.assertIn("umbriel-bogus.sock", status_text)
 
             app.destroy()
@@ -110,6 +111,7 @@ class TestLiveOverlayFixes(unittest.TestCase):
             scratch_config=self.SCRATCH_CONFIG,
             scratch_cache=self.SCRATCH_CACHE
         )
+        self.addCleanup(app.destroy)
         app.show_all()
         self._pump_events(0.3)
 
@@ -148,6 +150,7 @@ class TestLiveOverlayFixes(unittest.TestCase):
             scratch_config=self.SCRATCH_CONFIG,
             scratch_cache=self.SCRATCH_CACHE
         )
+        self.addCleanup(app.destroy)
         # Lock acquired by overlay.acquire_single_instance_lock
         lock = overlay.acquire_single_instance_lock(display)
         app.show_all()
@@ -181,6 +184,7 @@ class TestLiveOverlayFixes(unittest.TestCase):
             scratch_config=self.SCRATCH_CONFIG,
             scratch_cache=self.SCRATCH_CACHE
         )
+        self.addCleanup(app.destroy)
         app.show_all()
         self._pump_events(0.2)
 
@@ -245,6 +249,7 @@ class TestLiveOverlayFixes(unittest.TestCase):
             scratch_config=self.SCRATCH_CONFIG,
             scratch_cache=self.SCRATCH_CACHE
         )
+        self.addCleanup(app.destroy)
         app.show_all()
         self._pump_events(0.2)
 
