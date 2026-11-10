@@ -179,6 +179,8 @@ def verify_safety_gate(config_path: str, scratch_config: str = None, scratch_cac
             with open(f"/proc/{pid}/cmdline", "rb") as f:
                 args = [a.decode("utf-8", "ignore") for a in f.read().split(b"\x00") if a]
         except Exception as e:
+            if not os.path.isdir(f"/proc/{pid}"):
+                continue
             return False, f"Safety gate: unreadable /proc/{pid}/cmdline: {e}"
 
         cmdline_config = None
@@ -216,6 +218,8 @@ def verify_safety_gate(config_path: str, scratch_config: str = None, scratch_cac
                             k, v = entry.split(b"=", 1)
                             proc_env[k.decode("utf-8", "ignore")] = v.decode("utf-8", "ignore")
             except Exception as e:
+                if not os.path.isdir(f"/proc/{pid}"):
+                    continue
                 return False, f"Safety gate: unreadable /proc/{pid}/environ: {e}"
 
             # XDG Base Directory specification requires XDG_CONFIG_HOME to be absolute;
@@ -448,6 +452,8 @@ class KeybindOverlay(Gtk.Window):
         self.scratch_cache = os.path.abspath(scratch_cache) if scratch_cache else None
         self.binds_data = []
         self.active_submap = None
+        self._submap_lock = threading.Lock()
+        self._cleaned_up = False
         self.submap_listener_proc = None
         self.current_filtered_binds = []
 
@@ -644,6 +650,29 @@ class KeybindOverlay(Gtk.Window):
 
     def _start_submap_listener(self):
         """Starts a background thread listening to `umbriel subscribe submap`."""
+        def _reap_listener_proc(proc):
+            if proc is None:
+                return
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            if proc.poll() is not None:
+                return
+            try:
+                proc.terminate()
+                proc.wait(timeout=0.2)
+            except Exception:
+                pass
+            if proc.poll() is not None:
+                return
+            try:
+                proc.kill()
+                proc.wait(timeout=0.2)
+            except Exception:
+                pass
+
         def listener():
             env = os.environ.copy()
             try:
@@ -661,7 +690,12 @@ class KeybindOverlay(Gtk.Window):
             except Exception:
                 pass
 
+            proc = None
             try:
+                with self._submap_lock:
+                    if self._destroyed:
+                        return
+
                 proc = subprocess.Popen(
                     ["umbriel", "subscribe", "submap"],
                     stdout=subprocess.PIPE,
@@ -669,7 +703,18 @@ class KeybindOverlay(Gtk.Window):
                     text=True,
                     env=env
                 )
-                self.submap_listener_proc = proc
+
+                with self._submap_lock:
+                    if self._destroyed:
+                        should_run = False
+                    else:
+                        self.submap_listener_proc = proc
+                        should_run = True
+
+                if not should_run:
+                    _reap_listener_proc(proc)
+                    return
+
                 for line in proc.stdout:
                     if not line:
                         break
@@ -682,9 +727,13 @@ class KeybindOverlay(Gtk.Window):
                         continue
             except Exception:
                 pass
+            finally:
+                if proc is not None:
+                    _reap_listener_proc(proc)
 
         t = threading.Thread(target=listener, daemon=True)
         t.start()
+        self._submap_listener_thread = t
 
     def _render_chord(self, chord_str: str) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -1197,7 +1246,10 @@ class KeybindOverlay(Gtk.Window):
 
         return False
 
-    def _on_destroy(self, widget):
+    def _on_destroy(self, widget=None):
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
         self._destroyed = True
         if hasattr(self, "_cancel_event"):
             self._cancel_event.set()
@@ -1209,15 +1261,25 @@ class KeybindOverlay(Gtk.Window):
                         self._pending_proc.terminate()
                     except Exception:
                         pass
-        if self.submap_listener_proc:
+        proc = None
+        if hasattr(self, "_submap_lock"):
+            with self._submap_lock:
+                proc = self.submap_listener_proc
+                self.submap_listener_proc = None
+        else:
+            proc = getattr(self, "submap_listener_proc", None)
+            self.submap_listener_proc = None
+
+        if proc is not None and proc.poll() is None:
             try:
-                self.submap_listener_proc.terminate()
-                self.submap_listener_proc.wait(timeout=0.5)
+                proc.terminate()
+                proc.wait(timeout=0.2)
             except Exception:
                 pass
-            if self.submap_listener_proc.stdout:
+            if proc.poll() is None:
                 try:
-                    self.submap_listener_proc.stdout.close()
+                    proc.kill()
+                    proc.wait(timeout=0.2)
                 except Exception:
                     pass
 
